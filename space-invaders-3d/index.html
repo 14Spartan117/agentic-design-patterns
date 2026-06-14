@@ -199,6 +199,22 @@
     width: 84px; height: 84px; font-size: 26px;
     border-color: rgba(255, 93, 115, 0.6); color: var(--red); background: rgba(255, 93, 115, 0.12);
   }
+
+  #debugPanel {
+    top: 58px; left: 18px; padding: 10px 12px; max-width: 290px;
+    color: var(--amber); font-size: 11px; line-height: 1.6; letter-spacing: 1px;
+    text-shadow: 0 0 6px rgba(255, 209, 102, 0.55);
+  }
+  #debugPanel.hidden { display: none; }
+  #debugPanel .cap { color: var(--cyan); font-size: 10px; letter-spacing: 2px; margin-bottom: 4px; }
+  #debugPanel .key { color: var(--cyan); }
+  #debugPanel .state { color: var(--green); }
+  .debug-collider {
+    position: fixed; z-index: 13; pointer-events: none; display: none;
+    border: 1px solid rgba(255, 209, 102, 0.85); border-radius: 50%;
+    box-shadow: 0 0 8px rgba(255, 209, 102, 0.55); transform: translate(-50%, -50%);
+  }
+  .debug-collider.boss { border-color: rgba(179, 136, 255, 0.95); box-shadow: 0 0 10px rgba(179, 136, 255, 0.7); }
 </style>
 </head>
 <body>
@@ -240,8 +256,18 @@
 
   <div id="terminal" class="hud"></div>
 
+  <div id="debugPanel" class="hud panel hidden">
+    <div class="cap">DEBUG SHORTCUTS</div>
+    <div><span class="key">N</span> next wave</div>
+    <div><span class="key">H</span> spawn hunter &nbsp; <span class="key">B</span> spawn bomber</div>
+    <div><span class="key">V</span> spawn boss &nbsp; <span class="key">I</span> invulnerable <span id="debugInvuln" class="state">OFF</span></div>
+    <div><span class="key">U</span> refill hull/shield/planet</div>
+    <div><span class="key">O</span> overlays <span id="debugOverlays" class="state">OFF</span></div>
+  </div>
+
   <div id="popups"></div>
   <div id="toast"></div>
+  <div id="debugColliders"></div>
 
   <!-- Touch controls -------------------------------------------------- -->
   <div id="touch">
@@ -307,6 +333,7 @@
   import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 
   const { clamp, lerp } = THREE.MathUtils;
+  const DEBUG = new URLSearchParams(window.location.search).has("debug");
 
   // ---------------------------------------------------------------------------
   // Configuration
@@ -813,6 +840,7 @@
     target: null, lockTimer: 0,
     toSpawn: 0, spawnTimer: 0, spawnInterval: 1.3, invSpeed: 14, hunterRatio: 0.5,
     enemyFireBudget: 0,
+    debugInvulnerable: false, debugOverlays: false,
   };
 
   // ---------------------------------------------------------------------------
@@ -834,7 +862,10 @@
     gameOverScreen: document.getElementById("gameOverScreen"), finalScore: document.getElementById("finalScore"),
     gameOverTitle: document.getElementById("gameOverTitle"), gameOverMsg: document.getElementById("gameOverMsg"),
     newHi: document.getElementById("newHi"),
+    debugPanel: document.getElementById("debugPanel"), debugInvuln: document.getElementById("debugInvuln"), debugOverlays: document.getElementById("debugOverlays"),
+    debugColliders: document.getElementById("debugColliders"),
   };
+  if (DEBUG) ui.debugPanel.classList.remove("hidden");
   const radarCtx = ui.radar.getContext("2d");
 
   const termLines = [];
@@ -886,6 +917,7 @@
   }
 
   function damageHull(amount) {
+    if (DEBUG && state.debugInvulnerable) { term("DEBUG INVULNERABLE — HULL HIT IGNORED"); return; }
     let a = amount;
     if (state.shield > 0) { const s = Math.min(state.shield, a); state.shield -= s; a -= s; }
     if (a > 0) state.hull -= a;
@@ -895,6 +927,7 @@
     if (state.hull <= 0) endGame("SHIP DESTROYED", "Your fighter was torn apart in the void.");
   }
   function damagePlanet(amount) {
+    if (DEBUG && state.debugInvulnerable) { term("DEBUG INVULNERABLE — PLANET HIT IGNORED"); return; }
     state.integrity = Math.max(0, state.integrity - amount);
     state.shake = Math.max(state.shake, 0.8); Sfx.impact();
     term("PLANET STRUCK — INTEGRITY " + Math.round(state.integrity) + "%");
@@ -915,7 +948,7 @@
     syncHud(); toast("WAVE " + n); term("WAVE " + n + " INBOUND");
   }
 
-  function spawnInvader() {
+  function spawnInvader(role = null) {
     const inv = invaderPool.acquire();
     // spawn out near the play-space edge, biased ahead of the player
     let dir;
@@ -931,9 +964,13 @@
     inv.userData.fireTimer = 1 + Math.random() * 2;
     inv.userData.hp = 1;
     const r = Math.random();
-    inv.userData.role = r < state.hunterRatio ? "hunter" : r < state.hunterRatio + 0.25 ? "bomber" : "drifter";
+    inv.userData.role = role || (r < state.hunterRatio ? "hunter" : r < state.hunterRatio + 0.25 ? "bomber" : "drifter");
     inv.userData.spin = (Math.random() - 0.5) * 2;
-    if (inv.userData.role === "bomber") inv.userData.core.material.color.set(0xff8c1a), inv.userData.core.material.emissive.set(0xff8c1a);
+    inv.scale.setScalar(1);
+    if (inv.userData.role === "boss") {
+      inv.userData.hp = 12; inv.userData.speed = state.invSpeed * 0.55; inv.scale.setScalar(4.2);
+      inv.userData.core.material.color.set(0xb388ff); inv.userData.core.material.emissive.set(0x7c4dff);
+    } else if (inv.userData.role === "bomber") inv.userData.core.material.color.set(0xff8c1a), inv.userData.core.material.emissive.set(0xff8c1a);
     else inv.userData.core.material.color.set(0xff2d3a), inv.userData.core.material.emissive.set(0xff2d3a);
   }
 
@@ -947,7 +984,19 @@
     if (e.code === "KeyC") toggleView();
     if (e.code === "KeyZ" || e.code === "KeyF") controlAxes.throttle = clamp(controlAxes.throttle - 0.1, 0, 1);
     if (e.code === "KeyX" || e.code === "KeyR") controlAxes.throttle = clamp(controlAxes.throttle + 0.1, 0, 1);
+    handleDebugKey(e);
   });
+
+  function handleDebugKey(e) {
+    if (!DEBUG || e.repeat) return;
+    if (e.code === "KeyN") { beginWave(state.wave + 1); term("DEBUG NEXT WAVE"); }
+    else if (e.code === "KeyH") { spawnInvader("hunter"); term("DEBUG HUNTER SPAWNED"); }
+    else if (e.code === "KeyB") { spawnInvader("bomber"); term("DEBUG BOMBER SPAWNED"); }
+    else if (e.code === "KeyV") { spawnInvader("boss"); term("DEBUG BOSS SPAWNED"); }
+    else if (e.code === "KeyI") { state.debugInvulnerable = !state.debugInvulnerable; ui.debugInvuln.textContent = state.debugInvulnerable ? "ON" : "OFF"; term("DEBUG INVULNERABLE " + ui.debugInvuln.textContent); }
+    else if (e.code === "KeyU") { state.hull = 100; state.shield = 100; state.integrity = 100; syncHud(); term("DEBUG SYSTEMS REFILLED"); }
+    else if (e.code === "KeyO") { state.debugOverlays = !state.debugOverlays; ui.debugOverlays.textContent = state.debugOverlays ? "ON" : "OFF"; term("DEBUG OVERLAYS " + ui.debugOverlays.textContent); }
+  }
   window.addEventListener("keyup", (e) => { keys[e.code] = false; });
   window.addEventListener("wheel", (e) => {
     if (!state.running) return;
@@ -1167,7 +1216,7 @@
             if (state.target === inv) state.target = null;
             damagePlanet(9); if (!state.running) return; continue;
           }
-        } else if (ud.role === "hunter") {
+        } else if (ud.role === "hunter" || ud.role === "boss") {
           desired = tmpA.copy(shipPos).sub(inv.position);
           const d = desired.length(); desired.normalize();
           // keep a strafing distance
@@ -1187,7 +1236,7 @@
         inv.rotation.y += dt * ud.spin; inv.userData.ring.rotation.x += dt * 2;
 
         // hunter fire
-        if (ud.role === "hunter") {
+        if (ud.role === "hunter" || ud.role === "boss") {
           ud.fireTimer -= dt;
           if (ud.fireTimer <= 0 && state.enemyFireBudget > 0.25 && inv.position.distanceTo(shipPos) < 160) {
             spawnEnemyBullet(inv); state.enemyFireBudget = 0;
@@ -1203,14 +1252,18 @@
         let hit = false;
         for (let j = invaderPool.active.length - 1; j >= 0; j--) {
           const inv = invaderPool.active[j];
-          if (b.position.distanceToSquared(inv.position) < 2.2 * 2.2) {
-            spawnExplosion(inv.position, inv.userData.core.material.color.getHex(), 16);
+          const hitRadius = inv.userData.role === "boss" ? 6 : 2.2;
+          if (b.position.distanceToSquared(inv.position) < hitRadius * hitRadius) {
+            inv.userData.hp -= 1;
+            spawnExplosion(inv.position, inv.userData.core.material.color.getHex(), inv.userData.hp <= 0 ? 16 : 5);
             Sfx.explosion();
-            const dist = inv.position.distanceTo(shipPos);
-            const points = inv.userData.role === "bomber" ? 75 : inv.userData.role === "hunter" ? 50 : 30;
-            addScore(points, inv.position, "#ffd166");
-            if (state.target === inv) state.target = null;
-            invaderPool.release(inv); hit = true; break;
+            if (inv.userData.hp <= 0) {
+              const points = inv.userData.role === "boss" ? 500 : inv.userData.role === "bomber" ? 75 : inv.userData.role === "hunter" ? 50 : 30;
+              addScore(points, inv.position, "#ffd166");
+              if (state.target === inv) state.target = null;
+              invaderPool.release(inv);
+            }
+            hit = true; break;
           }
         }
         if (!hit) for (const a of asteroids) {
@@ -1249,7 +1302,8 @@
       // --- Invader ram ---
       for (let j = invaderPool.active.length - 1; j >= 0; j--) {
         const inv = invaderPool.active[j];
-        if (shipPos.distanceToSquared(inv.position) < 3 * 3) {
+        const ramRadius = inv.userData.role === "boss" ? 7 : 3;
+        if (shipPos.distanceToSquared(inv.position) < ramRadius * ramRadius) {
           spawnExplosion(inv.position, 0xff2d3a, 14); Sfx.explosion();
           if (state.target === inv) state.target = null;
           invaderPool.release(inv); damageHull(22); if (!state.running) return;
@@ -1337,8 +1391,10 @@
       const py = cy - (-tmpA.z / RADAR_RANGE) * rad; // forward(-z) -> up
       ctx.fillStyle = color; ctx.fillRect(px - 1.5, py - 1.5, 3, 3);
     };
-    for (const inv of invaderPool.active) plot(inv.position, inv.userData.role === "bomber" ? "#ff8c1a" : "#ff3340");
+    for (const inv of invaderPool.active) plot(inv.position, inv.userData.role === "boss" ? "#b388ff" : inv.userData.role === "bomber" ? "#ff8c1a" : "#ff3340");
     for (const a of asteroids) plot(a.position, "rgba(150,150,160,0.7)");
+    if (DEBUG && state.debugOverlays) drawDebugOverlays(ctx);
+    else if (DEBUG) hideDebugColliders();
 
     // Terminal: bearing of nearest hostile
     if (state.target && Math.random() < 0.01) {
@@ -1346,6 +1402,39 @@
       const side = tmpA.x > 4 ? "STARBOARD" : tmpA.x < -4 ? "PORT" : tmpA.z > 0 ? "ASTERN" : "AHEAD";
       term("HOSTILE OFF " + side);
     }
+  }
+
+  function hideDebugColliders() {
+    for (const el of ui.debugColliders.children) el.style.display = "none";
+  }
+
+  function debugColliderEl(i) {
+    while (ui.debugColliders.children.length <= i) {
+      const el = document.createElement("div");
+      el.className = "debug-collider";
+      ui.debugColliders.appendChild(el);
+    }
+    return ui.debugColliders.children[i];
+  }
+
+  function drawDebugOverlays(ctx) {
+    ctx.save();
+    ctx.fillStyle = "#ffd166";
+    ctx.fillText("DBG contacts:" + invaderPool.active.length + " bullets:" + (playerBullets.active.length + enemyBullets.active.length), 6, 144);
+    ctx.restore();
+
+    let i = 0;
+    for (const inv of invaderPool.active) {
+      const s = worldToScreen(inv.position);
+      const el = debugColliderEl(i++);
+      if (!s.visible) { el.style.display = "none"; continue; }
+      const size = inv.userData.role === "boss" ? 48 : 20;
+      el.className = "debug-collider" + (inv.userData.role === "boss" ? " boss" : "");
+      el.style.display = "block";
+      el.style.left = s.x + "px"; el.style.top = s.y + "px";
+      el.style.width = size + "px"; el.style.height = size + "px";
+    }
+    for (; i < ui.debugColliders.children.length; i++) ui.debugColliders.children[i].style.display = "none";
   }
 
   // ---------------------------------------------------------------------------
