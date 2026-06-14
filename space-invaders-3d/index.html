@@ -174,6 +174,14 @@
 
   /* Pause overlay (pointer-lock lost on desktop) */
   #pauseScreen { background: rgba(2, 4, 12, 0.6); cursor: pointer; }
+  #upgradeChoices { display: flex; flex-wrap: wrap; gap: 16px; justify-content: center; max-width: 940px; }
+  .upgrade-card {
+    width: min(260px, 80vw); min-height: 160px; padding: 18px; text-align: left;
+    color: var(--cyan); background: rgba(6, 12, 28, 0.88); border: 1px solid rgba(125, 249, 255, 0.45);
+    border-radius: 14px; box-shadow: 0 0 24px rgba(125, 249, 255, 0.18);
+  }
+  .upgrade-card h3 { margin: 0 0 10px; color: var(--green); letter-spacing: 2px; }
+  .upgrade-card p { margin: 0; font-size: 14px; line-height: 1.45; }
 
   /* Touch controls */
   #touch { position: fixed; inset: 0; display: none; z-index: 15; pointer-events: none; }
@@ -280,6 +288,12 @@
   <div id="pauseScreen" class="overlay hidden">
     <h2>PAUSED</h2>
     <p>Click to resume flight control.</p>
+  </div>
+
+  <div id="upgradeScreen" class="overlay hidden">
+    <h1>WAVE CLEARED</h1>
+    <p>Select one upgrade to install before the next attack wave.</p>
+    <div id="upgradeChoices"></div>
   </div>
 
   <div id="gameOverScreen" class="overlay hidden">
@@ -804,13 +818,15 @@
   const controlAxes = { pitch: 0, yaw: 0, roll: 0, throttle: 0.6, boost: false, fire: false };
 
   const state = {
-    running: false, paused: false,
+    running: false, paused: false, awaitingUpgrade: false,
     score: 0, wave: 1,
     hull: 100, shield: 100, integrity: 100,
+    boostEnergy: 100, boostCapacity: 100,
     hiscore: Number(localStorage.getItem(HISCORE_KEY) || 0),
     fireCooldown: 0, shieldRegenTimer: 0, shake: 0,
     cameraMode: "cockpit",
     target: null, lockTimer: 0,
+    upgrades: {},
     toSpawn: 0, spawnTimer: 0, spawnInterval: 1.3, invSpeed: 14, hunterRatio: 0.5,
     enemyFireBudget: 0,
   };
@@ -831,6 +847,7 @@
     radar: document.getElementById("radar"),
     terminal: document.getElementById("terminal"),
     startScreen: document.getElementById("startScreen"), pauseScreen: document.getElementById("pauseScreen"),
+    upgradeScreen: document.getElementById("upgradeScreen"), upgradeChoices: document.getElementById("upgradeChoices"),
     gameOverScreen: document.getElementById("gameOverScreen"), finalScore: document.getElementById("finalScore"),
     gameOverTitle: document.getElementById("gameOverTitle"), gameOverMsg: document.getElementById("gameOverMsg"),
     newHi: document.getElementById("newHi"),
@@ -865,15 +882,20 @@
   function barColor(el, pct, hi, mid) {
     el.style.background = pct > 50 ? hi : pct > 25 ? mid : "linear-gradient(90deg, #ff5d73, #ff2d55)";
   }
+  function maxShield() { return 100 + (state.upgrades.maxShield || 0) * 20; }
+  function shieldRegenRate() { return 16 + (state.upgrades.shieldRegen || 0) * 5; }
+  function weaponCooldown() { return Math.max(0.06, FIRE_CD - (state.upgrades.weaponCooldown || 0) * 0.015); }
+  function boostCapacity() { return 100 + (state.upgrades.boostCapacity || 0) * 25; }
+
   function syncHud() {
     ui.score.textContent = state.score; ui.hiscore.textContent = state.hiscore; ui.wave.textContent = state.wave;
     ui.thr.textContent = Math.round(controlAxes.throttle * 100);
     ui.hullVal.textContent = Math.round(state.hull); ui.hullFill.style.width = clamp(state.hull, 0, 100) + "%";
-    ui.shieldVal.textContent = Math.round(state.shield); ui.shieldFill.style.width = clamp(state.shield, 0, 100) + "%";
+    ui.shieldVal.textContent = Math.round(state.shield); ui.shieldFill.style.width = clamp(state.shield / maxShield() * 100, 0, 100) + "%";
     ui.planetVal.textContent = Math.round(state.integrity); ui.planetFill.style.width = clamp(state.integrity, 0, 100) + "%";
     barColor(ui.hullFill, state.hull, "linear-gradient(90deg,#39ff8c,#7df9ff)", "linear-gradient(90deg,#ffd166,#ffae42)");
     barColor(ui.planetFill, state.integrity, "linear-gradient(90deg,#b388ff,#7df9ff)", "linear-gradient(90deg,#ffd166,#ffae42)");
-    const wpct = clamp((1 - state.fireCooldown / FIRE_CD) * 100, 0, 100);
+    const wpct = clamp((1 - state.fireCooldown / weaponCooldown()) * 100, 0, 100);
     ui.weaponFill.style.width = wpct + "%"; ui.weaponVal.textContent = state.fireCooldown <= 0 ? "RDY" : "...";
     const tpct = Math.round(controlAxes.throttle * 100);
     ui.thrFill.style.width = tpct + "%"; ui.thrVal2.textContent = tpct;
@@ -906,6 +928,8 @@
   // Waves
   // ---------------------------------------------------------------------------
   function beginWave(n) {
+    state.awaitingUpgrade = false;
+    ui.upgradeScreen.classList.add("hidden");
     state.wave = n;
     state.toSpawn = 4 + n * 2;
     state.spawnTimer = 0.6;
@@ -913,6 +937,37 @@
     state.invSpeed = 13 + (n - 1) * 1.6;
     state.hunterRatio = Math.min(0.85, 0.45 + (n - 1) * 0.06);
     syncHud(); toast("WAVE " + n); term("WAVE " + n + " INBOUND");
+  }
+
+  const upgradeDefs = [
+    { key: "hullRepair", title: "Hull Repair", desc: "+25 hull integrity now.", apply: () => { state.hull = Math.min(100, state.hull + 25); } },
+    { key: "maxShield", title: "Shield Capacitors", desc: "+20 maximum shield capacity and refill shields.", apply: () => { state.upgrades.maxShield = (state.upgrades.maxShield || 0) + 1; state.shield = maxShield(); } },
+    { key: "shieldRegen", title: "Regen Matrix", desc: "Shields regenerate 5 points per second faster.", apply: () => { state.upgrades.shieldRegen = (state.upgrades.shieldRegen || 0) + 1; } },
+    { key: "weaponCooldown", title: "Thermal Vents", desc: "Primary weapon cooldown is reduced.", apply: () => { state.upgrades.weaponCooldown = (state.upgrades.weaponCooldown || 0) + 1; } },
+    { key: "boostCapacity", title: "Boost Reservoir", desc: "+25 boost capacity and a full boost recharge.", apply: () => { state.upgrades.boostCapacity = (state.upgrades.boostCapacity || 0) + 1; state.boostCapacity = boostCapacity(); state.boostEnergy = state.boostCapacity; } },
+    { key: "planetRepair", title: "Orbital Repair", desc: "+18 homeworld integrity now.", apply: () => { state.integrity = Math.min(100, state.integrity + 18); } },
+  ];
+
+  function showUpgradeChoices() {
+    state.awaitingUpgrade = true;
+    controlAxes.fire = false; controlAxes.boost = false;
+    const choices = upgradeDefs.slice().sort(() => Math.random() - 0.5).slice(0, 3);
+    ui.upgradeChoices.innerHTML = "";
+    for (const upgrade of choices) {
+      const btn = document.createElement("button");
+      btn.className = "upgrade-card";
+      btn.innerHTML = `<h3>${upgrade.title}</h3><p>${upgrade.desc}</p>`;
+      btn.addEventListener("click", () => {
+        upgrade.apply();
+        term("UPGRADE INSTALLED — " + upgrade.title.toUpperCase());
+        syncHud();
+        beginWave(state.wave + 1);
+        if (!IS_TOUCH) canvas.requestPointerLock();
+      }, { once: true });
+      ui.upgradeChoices.appendChild(btn);
+    }
+    ui.upgradeScreen.classList.remove("hidden");
+    if (document.pointerLockElement === canvas) document.exitPointerLock();
   }
 
   function spawnInvader() {
@@ -983,11 +1038,11 @@
     document.addEventListener("pointerlockchange", () => {
       if (document.pointerLockElement === canvas) {
         if (state.paused) { state.paused = false; ui.pauseScreen.classList.add("hidden"); }
-      } else if (state.running) {
+      } else if (state.running && !state.awaitingUpgrade) {
         state.paused = true; ui.pauseScreen.classList.remove("hidden");
       }
     });
-    ui.pauseScreen.addEventListener("click", () => { if (state.running) canvas.requestPointerLock(); });
+    ui.pauseScreen.addEventListener("click", () => { if (state.running && !state.awaitingUpgrade) canvas.requestPointerLock(); });
   }
 
   // Touch controls
@@ -1046,8 +1101,9 @@
   function startGame() {
     if (!assetsReady) return;
     Sfx.init(); Sfx.resume();
-    state.running = true; state.paused = false;
-    state.score = 0; state.hull = 100; state.shield = 100; state.integrity = 100;
+    state.running = true; state.paused = false; state.awaitingUpgrade = false;
+    state.upgrades = {}; state.boostCapacity = boostCapacity(); state.boostEnergy = state.boostCapacity;
+    state.score = 0; state.hull = 100; state.shield = maxShield(); state.integrity = 100;
     state.fireCooldown = 0; state.shieldRegenTimer = 0; state.shake = 0; state.target = null;
     controlAxes.throttle = 0.6;
     shipPos.set(0, 0, 60); shipVel.set(0, 0, 0);
@@ -1058,7 +1114,7 @@
     spawnAsteroidField();
     termLines.length = 0; term("SYSTEMS ONLINE"); term("DEFEND THE HOMEWORLD");
     beginWave(1); syncHud();
-    ui.startScreen.classList.add("hidden"); ui.gameOverScreen.classList.add("hidden"); ui.pauseScreen.classList.add("hidden");
+    ui.startScreen.classList.add("hidden"); ui.gameOverScreen.classList.add("hidden"); ui.pauseScreen.classList.add("hidden"); ui.upgradeScreen.classList.add("hidden");
     if (!IS_TOUCH) canvas.requestPointerLock();
   }
   function endGame(title, msg) {
@@ -1104,9 +1160,10 @@
       s.position.set(Math.cos(a) * s.userData.rad, s.userData.y, Math.sin(a) * s.userData.rad);
       s.rotation.y = -a;
     }
-    if (player.userData.flare) player.userData.flare.scale.y = 0.7 + Math.sin(t * 30) * 0.3 + (controlAxes.boost ? 0.8 : 0);
+    const boostActive = controlAxes.boost && state.boostEnergy > 0;
+    if (player.userData.flare) player.userData.flare.scale.y = 0.7 + Math.sin(t * 30) * 0.3 + (boostActive ? 0.8 : 0);
 
-    if (state.running && !state.paused) {
+    if (state.running && !state.paused && !state.awaitingUpgrade) {
       if (!IS_TOUCH) readKeyboard();   // touch writes controlAxes directly
 
       // --- Flight integration ---
@@ -1122,7 +1179,11 @@
       rightV.set(1, 0, 0).applyQuaternion(shipQuat);
       upV.set(0, 1, 0).applyQuaternion(shipQuat);
 
-      const targetSpeed = BASE_SPEED * controlAxes.throttle * (controlAxes.boost ? BOOST_MULT : 1);
+      if (boostActive) state.boostEnergy = Math.max(0, state.boostEnergy - 35 * dt);
+      else state.boostEnergy = Math.min(boostCapacity(), state.boostEnergy + 22 * dt);
+      state.boostCapacity = boostCapacity();
+
+      const targetSpeed = BASE_SPEED * controlAxes.throttle * (boostActive ? BOOST_MULT : 1);
       tmpA.copy(forward).multiplyScalar(targetSpeed);
       shipVel.lerp(tmpA, 1 - Math.pow(0.1, dt));
       shipPos.addScaledVector(shipVel, dt);
@@ -1138,16 +1199,16 @@
       player.position.copy(shipPos); player.quaternion.copy(shipQuat);
 
       // Boost SFX (gated)
-      if (controlAxes.boost && !state._wasBoost) Sfx.boost();
-      state._wasBoost = controlAxes.boost;
+      if (boostActive && !state._wasBoost) Sfx.boost();
+      state._wasBoost = boostActive;
 
       // --- Firing ---
       state.fireCooldown -= dt;
-      if (controlAxes.fire && state.fireCooldown <= 0) { spawnPlayerBullet(); Sfx.laser(); state.fireCooldown = FIRE_CD; }
+      if (controlAxes.fire && state.fireCooldown <= 0) { spawnPlayerBullet(); Sfx.laser(); state.fireCooldown = weaponCooldown(); }
 
       // --- Shield regen ---
       if (state.shieldRegenTimer > 0) state.shieldRegenTimer -= dt;
-      else if (state.shield < 100) { state.shield = Math.min(100, state.shield + 16 * dt); }
+      else if (state.shield < maxShield()) { state.shield = Math.min(maxShield(), state.shield + shieldRegenRate() * dt); }
 
       // --- Spawn ---
       if (state.toSpawn > 0) { state.spawnTimer -= dt; if (state.spawnTimer <= 0) { spawnInvader(); state.toSpawn--; state.spawnTimer = state.spawnInterval; } }
@@ -1262,8 +1323,8 @@
       // --- Wave cleared ---
       if (state.toSpawn === 0 && invaderPool.active.length === 0) {
         Sfx.waveClear(); addScore(150);
-        state.hull = Math.min(100, state.hull + 12); term("WAVE CLEARED — HULL REPAIRED");
-        beginWave(state.wave + 1);
+        term("WAVE CLEARED — SELECT UPGRADE");
+        showUpgradeChoices();
       }
     }
 
@@ -1276,7 +1337,7 @@
     }
 
     // --- Camera ---
-    const fovTarget = controlAxes.boost && state.running ? FOV_BOOST : FOV_BASE;
+    const fovTarget = boostActive && state.running ? FOV_BOOST : FOV_BASE;
     camera.fov = lerp(camera.fov, fovTarget, 1 - Math.pow(0.01, dt));
     camera.updateProjectionMatrix();
 
