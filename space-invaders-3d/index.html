@@ -156,6 +156,33 @@
   }
   .overlay h2 { font-size: clamp(20px, 4vw, 34px); letter-spacing: 3px; }
   .overlay p { font-size: 15px; line-height: 1.9; color: #9fb3c8; max-width: 560px; }
+  #profilePanel {
+    width: min(720px, 92vw); padding: 14px 16px; text-align: left; max-height: 34vh; overflow: auto;
+  }
+  #profilePanel h3 { color: var(--amber); letter-spacing: 2px; margin-bottom: 10px; text-align: center; }
+  #profileStats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-bottom: 12px; }
+  #profileStats div, #achievementList div {
+    border: 1px solid rgba(125, 249, 255, 0.18); border-radius: 6px; padding: 7px 9px;
+    background: rgba(125, 249, 255, 0.05); color: #cfefff; font-size: 12px; letter-spacing: 1px;
+  }
+  #achievementList { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; }
+  #achievementList div.locked { opacity: 0.45; filter: grayscale(0.7); }
+  #achievementList strong { color: var(--green); display: block; margin-bottom: 3px; }
+  #achievementList .locked strong { color: #9fb3c8; }
+  .achievement-popup {
+    position: fixed; right: 22px; top: 86px; z-index: 30; min-width: 260px; max-width: min(360px, 86vw);
+    font-family: "Courier New", monospace; padding: 12px 14px; color: #eafff6; pointer-events: none;
+    border: 1px solid rgba(57, 255, 140, 0.6); border-radius: 8px;
+    background: linear-gradient(180deg, rgba(5, 32, 28, 0.94), rgba(4, 12, 24, 0.92));
+    box-shadow: 0 0 22px rgba(57, 255, 140, 0.35); animation: achievementSlide 3.2s ease forwards;
+  }
+  .achievement-popup .label { color: var(--amber); font-size: 11px; letter-spacing: 2px; }
+  .achievement-popup strong { display: block; color: var(--green); letter-spacing: 1px; margin-top: 4px; }
+  @keyframes achievementSlide {
+    0% { opacity: 0; transform: translateX(24px); }
+    12%, 78% { opacity: 1; transform: translateX(0); }
+    100% { opacity: 0; transform: translateX(24px); }
+  }
   .overlay .key {
     display: inline-block; border: 1px solid #3a4d6b; border-radius: 6px;
     padding: 2px 9px; margin: 0 2px; color: var(--cyan); background: rgba(125, 249, 255, 0.06);
@@ -274,6 +301,11 @@
       <span class="key">Space</span> / click fire &nbsp; <span class="key">C</span> toggle cockpit / chase<br /><br />
       On mobile: left stick steers, right buttons fire / boost / roll / view.
     </p>
+    <section id="profilePanel" class="panel" aria-label="Persistent commander profile">
+      <h3>COMMANDER PROFILE</h3>
+      <div id="profileStats"></div>
+      <div id="achievementList"></div>
+    </section>
     <button id="startBtn" disabled>ESTABLISHING UPLINK&hellip;</button>
   </div>
 
@@ -320,11 +352,78 @@
   const FOV_BASE = 70, FOV_BOOST = 84;
   const RADAR_RANGE = 280;
   const HISCORE_KEY = "starfall_defender_hiscore";
+  const PROFILE_KEY = "starfall_defender_profile";
 
   const TEX_BASE = "https://unpkg.com/three@0.160.0/examples/textures/planets/";
   const LOW_FX = window.matchMedia("(pointer: coarse)").matches ||
                  (navigator.hardwareConcurrency || 8) <= 4;
   const IS_TOUCH = window.matchMedia("(pointer: coarse)").matches;
+
+  const ACHIEVEMENTS = [
+    { id: "first_kill", name: "First Contact", desc: "Destroy your first invader.", test: (p) => p.totalKills >= 1 },
+    { id: "ace", name: "Void Ace", desc: "Destroy 25 invaders across deployments.", test: (p) => p.totalKills >= 25 },
+    { id: "bomber_breaker", name: "Bomber Breaker", desc: "Intercept 10 bombers before impact.", test: (p) => p.bombersIntercepted >= 10 },
+    { id: "boss_bane", name: "Boss Bane", desc: "Destroy a boss-class invader.", test: (p) => p.bossKills >= 1 },
+    { id: "clean_wave", name: "Untouched Orbit", desc: "Clear a wave without ship or planet damage.", test: (p) => p.noDamageWaves >= 1 },
+    { id: "veteran", name: "Sector Veteran", desc: "Reach wave 5.", test: (p) => p.highestWave >= 5 },
+    { id: "guardian", name: "Planet Guardian", desc: "Save the homeworld 10 times.", test: (p) => p.totalPlanetSaves >= 10 },
+  ];
+
+  const defaultProfile = () => ({
+    totalKills: 0, highestWave: 0, bombersIntercepted: 0, bossKills: 0,
+    noDamageWaves: 0, totalPlanetSaves: 0, achievementsUnlocked: [],
+  });
+
+  function loadProfile() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(PROFILE_KEY) || "{}");
+      const profile = { ...defaultProfile(), ...saved };
+      profile.achievementsUnlocked = Array.isArray(profile.achievementsUnlocked) ? profile.achievementsUnlocked : [];
+      return profile;
+    } catch {
+      return defaultProfile();
+    }
+  }
+
+  const profile = loadProfile();
+  function saveProfile() { localStorage.setItem(PROFILE_KEY, JSON.stringify(profile)); }
+
+  function showAchievementPopup(achievement) {
+    const el = document.createElement("div");
+    el.className = "achievement-popup";
+    el.innerHTML = `<span class="label">ACHIEVEMENT UNLOCKED</span><strong>${achievement.name}</strong><span>${achievement.desc}</span>`;
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 3300);
+  }
+
+  function checkAchievements({ popup = false } = {}) {
+    let changed = false;
+    for (const achievement of ACHIEVEMENTS) {
+      if (!profile.achievementsUnlocked.includes(achievement.id) && achievement.test(profile)) {
+        profile.achievementsUnlocked.push(achievement.id);
+        changed = true;
+        if (popup) showAchievementPopup(achievement);
+      }
+    }
+    if (changed) { saveProfile(); renderProfile(); }
+  }
+
+  function renderProfile() {
+    const stats = document.getElementById("profileStats");
+    const list = document.getElementById("achievementList");
+    if (!stats || !list) return;
+    stats.innerHTML = [
+      ["TOTAL KILLS", profile.totalKills], ["HIGHEST WAVE", profile.highestWave],
+      ["BOMBERS", profile.bombersIntercepted], ["BOSS KILLS", profile.bossKills],
+      ["NO-DAMAGE WAVES", profile.noDamageWaves], ["PLANET SAVES", profile.totalPlanetSaves],
+      ["ACHIEVEMENTS", `${profile.achievementsUnlocked.length}/${ACHIEVEMENTS.length}`],
+    ].map(([label, value]) => `<div><strong>${label}</strong><br>${value}</div>`).join("");
+    list.innerHTML = ACHIEVEMENTS.map((achievement) => {
+      const unlocked = profile.achievementsUnlocked.includes(achievement.id);
+      return `<div class="${unlocked ? "" : "locked"}"><strong>${unlocked ? "✓" : "□"} ${achievement.name}</strong>${achievement.desc}</div>`;
+    }).join("");
+  }
+  checkAchievements();
 
   // Sun direction (world space) shared by light + planet shader
   const SUN_DIR = new THREE.Vector3(0.7, 0.35, 0.5).normalize();
@@ -592,6 +691,7 @@
     assetsReady = true;
     const btn = document.getElementById("startBtn");
     btn.disabled = false; btn.textContent = "LAUNCH";
+    renderProfile();
   }
 
   // ---------------------------------------------------------------------------
@@ -813,6 +913,7 @@
     target: null, lockTimer: 0,
     toSpawn: 0, spawnTimer: 0, spawnInterval: 1.3, invSpeed: 14, hunterRatio: 0.5,
     enemyFireBudget: 0,
+    waveTookDamage: false, bossSpawned: false,
   };
 
   // ---------------------------------------------------------------------------
@@ -889,6 +990,7 @@
     let a = amount;
     if (state.shield > 0) { const s = Math.min(state.shield, a); state.shield -= s; a -= s; }
     if (a > 0) state.hull -= a;
+    state.waveTookDamage = true;
     state.shieldRegenTimer = 4;
     state.shake = Math.max(state.shake, 1.0);
     syncHud();
@@ -896,6 +998,7 @@
   }
   function damagePlanet(amount) {
     state.integrity = Math.max(0, state.integrity - amount);
+    state.waveTookDamage = true;
     state.shake = Math.max(state.shake, 0.8); Sfx.impact();
     term("PLANET STRUCK — INTEGRITY " + Math.round(state.integrity) + "%");
     syncHud();
@@ -907,6 +1010,8 @@
   // ---------------------------------------------------------------------------
   function beginWave(n) {
     state.wave = n;
+    if (n > profile.highestWave) { profile.highestWave = n; saveProfile(); checkAchievements({ popup: state.running }); }
+    state.waveTookDamage = false; state.bossSpawned = false;
     state.toSpawn = 4 + n * 2;
     state.spawnTimer = 0.6;
     state.spawnInterval = Math.max(0.4, 1.4 - (n - 1) * 0.1);
@@ -931,9 +1036,13 @@
     inv.userData.fireTimer = 1 + Math.random() * 2;
     inv.userData.hp = 1;
     const r = Math.random();
-    inv.userData.role = r < state.hunterRatio ? "hunter" : r < state.hunterRatio + 0.25 ? "bomber" : "drifter";
+    const spawnBoss = state.wave > 0 && state.wave % 5 === 0 && !state.bossSpawned;
+    inv.userData.role = spawnBoss ? "boss" : r < state.hunterRatio ? "hunter" : r < state.hunterRatio + 0.25 ? "bomber" : "drifter";
+    if (spawnBoss) { state.bossSpawned = true; inv.userData.hp = 5 + Math.floor(state.wave / 5); }
     inv.userData.spin = (Math.random() - 0.5) * 2;
+    inv.scale.setScalar(inv.userData.role === "boss" ? 2.4 : 1);
     if (inv.userData.role === "bomber") inv.userData.core.material.color.set(0xff8c1a), inv.userData.core.material.emissive.set(0xff8c1a);
+    else if (inv.userData.role === "boss") inv.userData.core.material.color.set(0xb388ff), inv.userData.core.material.emissive.set(0xb388ff);
     else inv.userData.core.material.color.set(0xff2d3a), inv.userData.core.material.emissive.set(0xff2d3a);
   }
 
@@ -1048,7 +1157,7 @@
     Sfx.init(); Sfx.resume();
     state.running = true; state.paused = false;
     state.score = 0; state.hull = 100; state.shield = 100; state.integrity = 100;
-    state.fireCooldown = 0; state.shieldRegenTimer = 0; state.shake = 0; state.target = null;
+    state.fireCooldown = 0; state.shieldRegenTimer = 0; state.shake = 0; state.target = null; state.waveTookDamage = false;
     controlAxes.throttle = 0.6;
     shipPos.set(0, 0, 60); shipVel.set(0, 0, 0);
     shipQuat.identity(); mouseAim.x = 0; mouseAim.y = 0;
@@ -1058,6 +1167,7 @@
     spawnAsteroidField();
     termLines.length = 0; term("SYSTEMS ONLINE"); term("DEFEND THE HOMEWORLD");
     beginWave(1); syncHud();
+    renderProfile();
     ui.startScreen.classList.add("hidden"); ui.gameOverScreen.classList.add("hidden"); ui.pauseScreen.classList.add("hidden");
     if (!IS_TOUCH) canvas.requestPointerLock();
   }
@@ -1071,6 +1181,7 @@
     ui.gameOverTitle.textContent = title;
     ui.gameOverMsg.textContent = msg + " You reached wave " + state.wave + ".";
     ui.newHi.classList.toggle("hidden", !isNewHi);
+    checkAchievements(); renderProfile();
     ui.gameOverScreen.classList.remove("hidden");
     if (document.pointerLockElement === canvas) document.exitPointerLock();
   }
@@ -1167,7 +1278,7 @@
             if (state.target === inv) state.target = null;
             damagePlanet(9); if (!state.running) return; continue;
           }
-        } else if (ud.role === "hunter") {
+        } else if (ud.role === "hunter" || ud.role === "boss") {
           desired = tmpA.copy(shipPos).sub(inv.position);
           const d = desired.length(); desired.normalize();
           // keep a strafing distance
@@ -1187,7 +1298,7 @@
         inv.rotation.y += dt * ud.spin; inv.userData.ring.rotation.x += dt * 2;
 
         // hunter fire
-        if (ud.role === "hunter") {
+        if (ud.role === "hunter" || ud.role === "boss") {
           ud.fireTimer -= dt;
           if (ud.fireTimer <= 0 && state.enemyFireBudget > 0.25 && inv.position.distanceTo(shipPos) < 160) {
             spawnEnemyBullet(inv); state.enemyFireBudget = 0;
@@ -1203,14 +1314,26 @@
         let hit = false;
         for (let j = invaderPool.active.length - 1; j >= 0; j--) {
           const inv = invaderPool.active[j];
-          if (b.position.distanceToSquared(inv.position) < 2.2 * 2.2) {
-            spawnExplosion(inv.position, inv.userData.core.material.color.getHex(), 16);
+          const hitRadius = inv.userData.role === "boss" ? 5.2 : 2.2;
+          if (b.position.distanceToSquared(inv.position) < hitRadius * hitRadius) {
+            const role = inv.userData.role;
+            inv.userData.hp = (inv.userData.hp || 1) - 1;
+            spawnExplosion(inv.position, inv.userData.core.material.color.getHex(), role === "boss" ? 22 : 16);
             Sfx.explosion();
-            const dist = inv.position.distanceTo(shipPos);
-            const points = inv.userData.role === "bomber" ? 75 : inv.userData.role === "hunter" ? 50 : 30;
-            addScore(points, inv.position, "#ffd166");
-            if (state.target === inv) state.target = null;
-            invaderPool.release(inv); hit = true; break;
+            hit = true;
+            if (inv.userData.hp <= 0) {
+              const points = role === "bomber" ? 75 : role === "boss" ? 300 : role === "hunter" ? 50 : 30;
+              addScore(points, inv.position, "#ffd166");
+              profile.totalKills++;
+              if (role === "bomber") profile.bombersIntercepted++;
+              if (role === "boss") profile.bossKills++;
+              saveProfile(); checkAchievements({ popup: true });
+              if (state.target === inv) state.target = null;
+              invaderPool.release(inv);
+            } else {
+              scorePopup(inv.position, "ARMOR " + inv.userData.hp, "#b388ff");
+            }
+            break;
           }
         }
         if (!hit) for (const a of asteroids) {
@@ -1262,6 +1385,12 @@
       // --- Wave cleared ---
       if (state.toSpawn === 0 && invaderPool.active.length === 0) {
         Sfx.waveClear(); addScore(150);
+        profile.totalPlanetSaves++;
+        if (!state.waveTookDamage) {
+          profile.noDamageWaves++;
+          term("PERFECT DEFENSE — NO DAMAGE RECORDED");
+        }
+        saveProfile(); checkAchievements({ popup: true });
         state.hull = Math.min(100, state.hull + 12); term("WAVE CLEARED — HULL REPAIRED");
         beginWave(state.wave + 1);
       }
@@ -1337,7 +1466,7 @@
       const py = cy - (-tmpA.z / RADAR_RANGE) * rad; // forward(-z) -> up
       ctx.fillStyle = color; ctx.fillRect(px - 1.5, py - 1.5, 3, 3);
     };
-    for (const inv of invaderPool.active) plot(inv.position, inv.userData.role === "bomber" ? "#ff8c1a" : "#ff3340");
+    for (const inv of invaderPool.active) plot(inv.position, inv.userData.role === "boss" ? "#b388ff" : inv.userData.role === "bomber" ? "#ff8c1a" : "#ff3340");
     for (const a of asteroids) plot(a.position, "rgba(150,150,160,0.7)");
 
     // Terminal: bearing of nearest hostile
