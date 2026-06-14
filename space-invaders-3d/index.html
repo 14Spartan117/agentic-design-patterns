@@ -870,6 +870,38 @@
       new THREE.MeshBasicMaterial({ color: 0x1b6f8f }));
     strip.position.set(0, -0.78, -0.82); strip.rotation.x = -0.35;
     g.add(strip);
+
+    const makeLight = (x, y, labelColor = 0x143044) => {
+      const bezel = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.065, 0.018, 18),
+        new THREE.MeshStandardMaterial({ color: 0x091018, metalness: 0.7, roughness: 0.35 }));
+      bezel.rotation.x = Math.PI / 2; bezel.position.set(x, y, -0.72);
+      const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.04, 14, 10),
+        new THREE.MeshBasicMaterial({ color: labelColor }));
+      lamp.position.set(x, y, -0.705);
+      g.add(bezel, lamp);
+      return lamp;
+    };
+
+    const shieldLight = makeLight(-0.78, -0.76, 0x1fa2ff);
+    const hullLight = makeLight(-0.60, -0.76, 0x39ff8c);
+    const weaponLight = makeLight(0.62, -0.76, 0x39ff8c);
+    const boostLight = makeLight(0.80, -0.76, 0x1b6f8f);
+    const planetLight = makeLight(0, -0.68, 0xb388ff);
+
+    const throttleBack = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.34, 0.025),
+      new THREE.MeshBasicMaterial({ color: 0x07131e }));
+    throttleBack.position.set(-0.98, -0.78, -0.70);
+    g.add(throttleBack);
+    const throttleStrip = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.30, 0.03),
+      new THREE.MeshBasicMaterial({ color: 0x39ff8c }));
+    throttleStrip.position.set(-0.98, -0.78, -0.675);
+    g.add(throttleStrip);
+
+    g.userData.basePosition = g.position.clone();
+    g.userData.baseRotation = g.rotation.clone();
+    g.userData.lights = { shield: shieldLight, hull: hullLight, weapon: weaponLight, boost: boostLight, planet: planetLight };
+    g.userData.throttleStrip = throttleStrip;
+    g.userData.indicatorStrip = strip;
     return g;
   }
   const cockpit = buildCockpit();
@@ -1184,7 +1216,7 @@
     hull: 100, shield: 100, integrity: 100,
     hiscore: Number(localStorage.getItem(HISCORE_KEY) || 0),
     fireCooldown: 0, weaponType: "laser", shieldRegenTimer: 0, invulnerableTimer: 0, shake: 0,
-    boostEnergy: 100, boostOverheated: false, boostActive: false,
+    boostEnergy: 100, boostOverheated: false, boostActive: false, cockpitShake: 0, boostHeat: 0,
     cameraMode: "cockpit",
     target: null, lockTimer: 0,
     toSpawn: 0, spawnTimer: 0, spawnInterval: 1.3, invSpeed: 14, hunterRatio: 0.5,
@@ -1265,6 +1297,21 @@
     ui.boostFill.style.width = bpct + "%";
     ui.boostVal.textContent = state.boostOverheated ? "HOT" : bpct;
     barColor(ui.boostFill, bpct, "linear-gradient(90deg,#ff5d73,#ffd166)", "linear-gradient(90deg,#ffd166,#ffae42)");
+
+    const cp = cockpit.userData;
+    if (cp.lights) {
+      const pulse = 0.55 + Math.sin(performance.now() * 0.012) * 0.45;
+      cp.lights.shield.material.color.setHex(state.shield < 30 ? (pulse > 0.5 ? 0xff5d73 : 0x3a080d) : state.shield < 55 ? 0xffd166 : 0x1fa2ff);
+      cp.lights.hull.material.color.setHex(state.hull < 35 ? (pulse > 0.5 ? 0xff2d55 : 0x3a080d) : state.hull < 60 ? 0xffd166 : 0x39ff8c);
+      cp.lights.weapon.material.color.setHex(state.fireCooldown <= 0 ? 0x39ff8c : 0x3b2b0c);
+      cp.lights.boost.material.color.setHex(state.boostHeat > 0.75 ? (pulse > 0.35 ? 0xff5d73 : 0x3a080d) : controlAxes.boost ? 0xffd166 : 0x1b6f8f);
+      cp.lights.planet.material.color.setHex(state.integrity < 35 ? (pulse > 0.5 ? 0xff5d73 : 0x3a080d) : 0xb388ff);
+    }
+    if (cp.throttleStrip) {
+      cp.throttleStrip.scale.y = Math.max(0.05, controlAxes.throttle);
+      cp.throttleStrip.position.y = -0.93 + controlAxes.throttle * 0.15;
+      cp.throttleStrip.material.color.setHex(controlAxes.boost ? 0xffd166 : controlAxes.throttle > 0.75 ? 0x39ff8c : 0x7df9ff);
+    }
   }
 
   function addScore(points, atPos, color) {
@@ -1286,6 +1333,7 @@
     state.invulnerableTimer = PLAYER_INVULN_DURATION;
     state.shieldRegenTimer = 4;
     state.shake = Math.max(state.shake, 1.0);
+    state.cockpitShake = Math.max(state.cockpitShake, 0.45);
     syncHud();
     if (state.hull <= 0) endGame("SHIP DESTROYED", "Your fighter was torn apart in the void.");
   }
@@ -1309,6 +1357,7 @@
     state.integrity = Math.max(0, state.integrity - amount);
     state.waveTookDamage = true;
     state.shake = Math.max(state.shake, 1.2);
+    state.cockpitShake = Math.max(state.cockpitShake, 0.25);
     state.planetFlash = 1.0; state.cityFlicker = 1.4; state.defensePulse = 1.0;
     Sfx.impact();
 
@@ -1553,6 +1602,7 @@
     state.fireCooldown = 0; state.weaponType = "laser"; state.shieldRegenTimer = 0; state.invulnerableTimer = 0; state.shake = 0; state.target = null; state.waveTookDamage = false;
     state.boostEnergy = 100; state.boostOverheated = false; state.boostActive = false; state._wasBoost = false;
     state.weaponBoostTimer = 0; state.boostSurgeTimer = 0;
+    state.cockpitShake = 0; state.boostHeat = 0;
     state.planetWarningFlags = { 75: false, 50: false, 25: false };
     state.planetFlash = 0; state.cityFlicker = 0; state.defensePulse = 0;
     controlAxes.throttle = 0.6;
@@ -1648,6 +1698,7 @@
       }
     }
     if (player.userData.flare) player.userData.flare.scale.y = 0.7 + Math.sin(t * 30) * 0.3 + (state.boostActive ? 0.8 : 0);
+    state.boostHeat = clamp(state.boostHeat + (state.boostActive && state.running ? dt * 0.55 : -dt * 0.35), 0, 1);
 
     if (state.running && !state.paused) {
       if (state.invulnerableTimer > 0) state.invulnerableTimer = Math.max(0, state.invulnerableTimer - dt);
@@ -2071,6 +2122,16 @@
       camera.position.x += (Math.random() - 0.5) * state.shake;
       camera.position.y += (Math.random() - 0.5) * state.shake;
     }
+
+    const cp = cockpit.userData;
+    state.cockpitShake = Math.max(0, state.cockpitShake - dt * 1.8);
+    const engineRumble = state.cameraMode === "cockpit" && state.running ? 0.006 + controlAxes.throttle * 0.01 + (controlAxes.boost ? 0.018 : 0) : 0;
+    const hitRumble = state.cockpitShake * 0.035;
+    cockpit.position.copy(cp.basePosition);
+    cockpit.rotation.copy(cp.baseRotation);
+    cockpit.position.x += Math.sin(t * 37) * engineRumble + (Math.random() - 0.5) * hitRumble;
+    cockpit.position.y += Math.cos(t * 43) * engineRumble * 0.65 + (Math.random() - 0.5) * hitRumble;
+    cockpit.rotation.z += Math.sin(t * 31) * engineRumble * 0.35 + (Math.random() - 0.5) * hitRumble * 0.4;
 
     // --- HUD overlays ---
     if (state.running) { updateHudOverlays(); syncHud(); }
