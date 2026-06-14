@@ -19,6 +19,28 @@ python3 -m http.server 8000
 > Opening `index.html` directly via `file://` may be blocked by the browser's
 > module/CORS rules in some setups.
 
+## Deploy to Vercel
+
+This is a static site (no build step). A `vercel.json` at the repo root rewrites
+`/` to this game, so the deployed site opens straight into the game.
+
+**Option A — Vercel CLI (fastest):** from the repo root, on the branch with the game:
+
+```bash
+npm i -g vercel        # once
+vercel login           # once
+vercel --prod          # deploy; accept the defaults (no build, root output)
+```
+
+Vercel prints the live URL when it finishes.
+
+**Option B — Git integration (auto-deploy on push):**
+
+1. Go to <https://vercel.com/new> and import this GitHub repo.
+2. Framework preset: **Other**. Leave Build Command empty and Output Directory as the repo root.
+3. Set the Production Branch to the branch holding the game (or merge it to `main`).
+4. Deploy. Every push to that branch then redeploys automatically.
+
 ## Controls
 
 | Action | Keys |
