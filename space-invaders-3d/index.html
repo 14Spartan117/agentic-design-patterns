@@ -365,8 +365,10 @@
     charge: { name: "CHARGE", cooldown: 0.95, speed: 190,          damage: 5, color: 0x7df9ff, size: 2.0, pellets: 1, range: 420 },
   };
   const FIRE_CD = WEAPONS.laser.cooldown;
+  const BOOST_FIRE_CD = 0.07;
   const ENEMY_BULLET_SPEED = 75, ENEMY_BULLET_RANGE = 260;
   const ALLY_BULLET_SPEED = 46, ALLY_BULLET_RANGE = 115, ALLY_FIRE_CD = 2.8;
+  const POWERUP_CHANCE = 0.22, POWERUP_LIFETIME = 18, POWERUP_SPEED = 10;
   const FOV_BASE = 70, FOV_BOOST = 84;
   const RADAR_RANGE = 280;
   const HISCORE_KEY = "starfall_defender_hiscore";
@@ -926,6 +928,30 @@
   const allyBullets = makePool(() => { const m = new THREE.Mesh(allyBulletGeo, allyBulletMat); scene.add(m); return m; });
   const particlePool = makePool(() => { const m = new THREE.Mesh(particleGeo, new THREE.MeshBasicMaterial({ transparent: true })); scene.add(m); return m; });
 
+  const powerupGeo = new THREE.OctahedronGeometry(0.9, 0);
+  const powerupCoreGeo = new THREE.SphereGeometry(0.34, 12, 12);
+  const powerupRingGeo = new THREE.TorusGeometry(1.05, 0.08, 8, 24);
+  const POWERUP_TYPES = {
+    shield: { label: "SHIELD CELL", color: 0x7df9ff, term: "SHIELD RESTORED" },
+    weapon: { label: "WEAPON AMP", color: 0xffd166, term: "WEAPON BOOST ONLINE" },
+    boost: { label: "BOOST REFILL", color: 0x39ff8c, term: "BOOST RESERVES REFILLED" },
+    repair: { label: "PLANET REPAIR", color: 0xb388ff, term: "PLANET INTEGRITY REPAIRED" },
+  };
+  function makePowerupMesh() {
+    const group = new THREE.Group();
+    const shell = new THREE.Mesh(powerupGeo, new THREE.MeshStandardMaterial({
+      color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 1.2, metalness: 0.35, roughness: 0.25, transparent: true, opacity: 0.82, flatShading: true,
+    }));
+    const core = new THREE.Mesh(powerupCoreGeo, new THREE.MeshBasicMaterial({ color: 0xffffff }));
+    const ring = new THREE.Mesh(powerupRingGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.75 }));
+    ring.rotation.x = Math.PI / 2;
+    group.add(shell, core, ring);
+    group.userData.shell = shell; group.userData.core = core; group.userData.ring = ring;
+    scene.add(group);
+    return group;
+  }
+  const powerupPool = makePool(makePowerupMesh);
+
   const invaderGeo = new THREE.IcosahedronGeometry(1.0, 0);
   const invaderRingGeo = new THREE.TorusGeometry(1.15, 0.16, 8, 20);
   const invaderEyeGeo = new THREE.SphereGeometry(0.26, 12, 12);
@@ -1056,6 +1082,47 @@
     b.userData.from = b.position.clone();
     b.userData.owner = ally;
   }
+
+  function spawnPowerup(pos) {
+    if (Math.random() > POWERUP_CHANCE) return;
+    const types = Object.keys(POWERUP_TYPES);
+    const type = types[Math.random() * types.length | 0];
+    const cfg = POWERUP_TYPES[type];
+    const p = powerupPool.acquire();
+    p.position.copy(pos);
+    p.scale.setScalar(1);
+    p.userData.type = type;
+    p.userData.life = POWERUP_LIFETIME;
+    p.userData.vel = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize().multiplyScalar(POWERUP_SPEED);
+    p.userData.shell.material.color.set(cfg.color);
+    p.userData.shell.material.emissive.set(cfg.color);
+    p.userData.core.material.color.set(cfg.color);
+    p.userData.ring.material.color.set(cfg.color);
+  }
+
+  function collectPowerup(p) {
+    const cfg = POWERUP_TYPES[p.userData.type];
+    if (p.userData.type === "shield") {
+      state.shield = Math.min(100, state.shield + 40);
+      state.shieldRegenTimer = 0;
+    } else if (p.userData.type === "weapon") {
+      state.weaponBoostTimer = Math.max(state.weaponBoostTimer, 8);
+      state.fireCooldown = Math.min(state.fireCooldown, BOOST_FIRE_CD);
+    } else if (p.userData.type === "boost") {
+      controlAxes.throttle = 1;
+      state.boostSurgeTimer = Math.max(state.boostSurgeTimer, 5);
+    } else if (p.userData.type === "repair") {
+      state.integrity = Math.min(100, state.integrity + 18);
+    }
+    spawnExplosion(p.position, cfg.color, 12);
+    scorePopup(p.position, cfg.label, "#" + cfg.color.toString(16).padStart(6, "0"));
+    term("POWERUP — " + cfg.term);
+    toast(cfg.label);
+    Sfx.lock();
+    powerupPool.release(p);
+    syncHud();
+  }
+
   function spawnExplosion(pos, color, n) {
     n = n || 14;
     for (let i = 0; i < n; i++) {
@@ -1119,7 +1186,7 @@
     cameraMode: "cockpit",
     target: null, lockTimer: 0,
     toSpawn: 0, spawnTimer: 0, spawnInterval: 1.3, invSpeed: 14, hunterRatio: 0.5,
-    enemyFireBudget: 0,
+    enemyFireBudget: 0, weaponBoostTimer: 0, boostSurgeTimer: 0,
     waveTookDamage: false, bossSpawned: false,
     allies,
   };
@@ -1184,8 +1251,10 @@
     barColor(ui.hullFill, state.hull, "linear-gradient(90deg,#39ff8c,#7df9ff)", "linear-gradient(90deg,#ffd166,#ffae42)");
     barColor(ui.planetFill, state.integrity, "linear-gradient(90deg,#b388ff,#7df9ff)", "linear-gradient(90deg,#ffd166,#ffae42)");
     const activeWeapon = getActiveWeapon();
-    const wpct = clamp((1 - state.fireCooldown / activeWeapon.cooldown) * 100, 0, 100);
-    ui.weaponFill.style.width = wpct + "%"; ui.weaponVal.textContent = activeWeapon.name + " " + (state.fireCooldown <= 0 ? "RDY" : "...");
+    const activeFireCd = state.weaponBoostTimer > 0 ? BOOST_FIRE_CD : activeWeapon.cooldown;
+    const wpct = clamp((1 - state.fireCooldown / activeFireCd) * 100, 0, 100);
+    ui.weaponFill.style.width = wpct + "%";
+    ui.weaponVal.textContent = state.weaponBoostTimer > 0 ? activeWeapon.name + " AMP" : activeWeapon.name + " " + (state.fireCooldown <= 0 ? "RDY" : "...");
     const tpct = Math.round(controlAxes.throttle * 100);
     ui.thrFill.style.width = tpct + "%"; ui.thrVal2.textContent = tpct;
     const bpct = Math.round(clamp(state.boostEnergy, 0, 100));
@@ -1446,12 +1515,13 @@
     state.score = 0; state.hull = 100; state.shield = 100; state.integrity = 100;
     state.fireCooldown = 0; state.weaponType = "laser"; state.shieldRegenTimer = 0; state.invulnerableTimer = 0; state.shake = 0; state.target = null; state.waveTookDamage = false;
     state.boostEnergy = 100; state.boostOverheated = false; state.boostActive = false; state._wasBoost = false;
+    state.weaponBoostTimer = 0; state.boostSurgeTimer = 0;
     controlAxes.throttle = 0.6;
     shipPos.set(0, 0, 60); shipVel.set(0, 0, 0);
     shipQuat.identity(); mouseAim.x = 0; mouseAim.y = 0;
     player.position.copy(shipPos); player.quaternion.copy(shipQuat);
 
-    invaderPool.releaseAll(); playerBullets.releaseAll(); enemyBullets.releaseAll(); allyBullets.releaseAll(); particlePool.releaseAll();
+    invaderPool.releaseAll(); playerBullets.releaseAll(); enemyBullets.releaseAll(); allyBullets.releaseAll(); particlePool.releaseAll(); powerupPool.releaseAll();
     resetAllies();
     spawnAsteroidField();
     spawnEnvironmentLandmarks();
@@ -1547,6 +1617,8 @@
       rightV.set(1, 0, 0).applyQuaternion(shipQuat);
       upV.set(0, 1, 0).applyQuaternion(shipQuat);
 
+      if (state.weaponBoostTimer > 0) state.weaponBoostTimer -= dt;
+      if (state.boostSurgeTimer > 0) state.boostSurgeTimer -= dt;
       if (state.boostOverheated && state.boostEnergy >= BOOST_RECOVER) state.boostOverheated = false;
       const wantsBoost = controlAxes.boost && !state.boostOverheated && state.boostEnergy > 0;
       if (wantsBoost) {
@@ -1555,7 +1627,8 @@
       } else {
         state.boostEnergy = Math.min(100, state.boostEnergy + BOOST_REGEN * dt);
       }
-      state.boostActive = wantsBoost && !state.boostOverheated;
+      // a "boost surge" powerup grants the speed boost without spending energy
+      state.boostActive = (wantsBoost && !state.boostOverheated) || state.boostSurgeTimer > 0;
 
       const targetSpeed = BASE_SPEED * controlAxes.throttle * (state.boostActive ? BOOST_MULT : 1);
       tmpA.copy(forward).multiplyScalar(targetSpeed);
@@ -1578,7 +1651,10 @@
 
       // --- Firing ---
       state.fireCooldown -= dt;
-      if (controlAxes.fire && state.fireCooldown <= 0) fireWeapon();
+      if (controlAxes.fire && state.fireCooldown <= 0) {
+        fireWeapon();
+        if (state.weaponBoostTimer > 0) state.fireCooldown = Math.min(state.fireCooldown, BOOST_FIRE_CD);
+      }
 
       // --- Shield regen ---
       if (state.shieldRegenTimer > 0) state.shieldRegenTimer -= dt;
@@ -1764,6 +1840,7 @@
               if (role === "boss") profile.bossKills++;
               saveProfile(); checkAchievements({ popup: true });
               if (state.target === inv) state.target = null;
+              spawnPowerup(inv.position);
               invaderPool.release(inv);
             } else {
               spawnExplosion(inv.position, inv.userData.baseColor, 5); Sfx.hit();
@@ -1822,6 +1899,19 @@
         if (hit || b.position.distanceToSquared(b.userData.from) > ALLY_BULLET_RANGE * ALLY_BULLET_RANGE) allyBullets.release(b);
       }
 
+      // --- Powerups ---
+      for (let i = powerupPool.active.length - 1; i >= 0; i--) {
+        const p = powerupPool.active[i];
+        p.userData.life -= dt;
+        p.position.addScaledVector(p.userData.vel, dt);
+        p.rotation.x += dt * 1.8; p.rotation.y += dt * 2.6;
+        p.userData.ring.rotation.z += dt * 4;
+        p.scale.setScalar(0.85 + Math.sin(t * 6) * 0.12);
+        if (p.position.length() > WORLD_R) p.userData.vel.multiplyScalar(-1);
+        if (p.position.distanceToSquared(shipPos) < 4.2 * 4.2) { collectPowerup(p); continue; }
+        if (p.userData.life <= 0) powerupPool.release(p);
+      }
+
       // --- Asteroids (drift/spin) + ship collision ---
       for (const a of asteroids) {
         a.rotation.x += a.userData.spin.x * dt; a.rotation.y += a.userData.spin.y * dt; a.rotation.z += a.userData.spin.z * dt;
@@ -1862,6 +1952,7 @@
           spawnExplosion(inv.position, mineHit ? 0x9b5dff : 0xff2d3a, mineHit ? 24 : 14); Sfx.explosion();
           if (mineHit) term("PROXIMITY MINE DETONATED");
           if (state.target === inv) state.target = null;
+          spawnPowerup(inv.position);
           invaderPool.release(inv); damageHull(mineHit ? 36 : 22); if (!state.running) return;
         }
       }
@@ -1958,6 +2049,7 @@
     for (const ally of state.allies) {
       if (ally.userData.status !== "destroyed") plot(ally.getWorldPosition(tmpB), ally.userData.status === "disabled" ? "#ffd166" : "#7df9ff");
     }
+    for (const p of powerupPool.active) plot(p.position, "#b388ff");
     for (const a of asteroids) plot(a.position, "rgba(150,150,160,0.7)");
     for (const h of environmentHazards) plot(h.position, h.userData.kind === "ENERGY STORM" ? "rgba(125,249,255,0.85)" : "rgba(255,93,115,0.75)");
 
