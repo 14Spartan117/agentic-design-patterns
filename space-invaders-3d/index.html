@@ -15,6 +15,15 @@
     --green: #39ff8c;
     --amber: #ffd166;
     --red: #ff5d73;
+    --touch-scale: 1;
+    --touch-opacity: 0.86;
+    --touch-stick-left: 22px;
+    --touch-stick-right: auto;
+    --touch-buttons-left: auto;
+    --touch-buttons-right: 18px;
+    --touch-bottom: 22px;
+    --touch-stick-x: 0px;
+    --touch-stick-y: 0px;
   }
 
   /* ---- Shared HUD chrome ---------------------------------------------- */
@@ -179,26 +188,39 @@
   #touch { position: fixed; inset: 0; display: none; z-index: 15; pointer-events: none; }
   body.show-touch #touch { display: block; }
   #stick {
-    position: absolute; left: 22px; bottom: 22px; width: 132px; height: 132px;
+    position: absolute; left: var(--touch-stick-left); right: var(--touch-stick-right); bottom: var(--touch-bottom);
+    width: calc(132px * var(--touch-scale)); height: calc(132px * var(--touch-scale));
+    transform: translate(var(--touch-stick-x), var(--touch-stick-y)); opacity: var(--touch-opacity);
     border-radius: 50%; border: 2px solid rgba(125, 249, 255, 0.35);
     background: rgba(125, 249, 255, 0.06); pointer-events: auto; touch-action: none;
   }
   #stick #nub {
-    position: absolute; left: 50%; top: 50%; width: 54px; height: 54px; margin: -27px 0 0 -27px;
+    position: absolute; left: 50%; top: 50%;
+    width: calc(54px * var(--touch-scale)); height: calc(54px * var(--touch-scale));
+    margin: calc(-27px * var(--touch-scale)) 0 0 calc(-27px * var(--touch-scale));
     border-radius: 50%; background: rgba(125, 249, 255, 0.28); border: 2px solid rgba(125, 249, 255, 0.6);
   }
-  #touchRight { position: absolute; right: 18px; bottom: 22px; display: flex; align-items: flex-end; gap: 12px; pointer-events: none; }
-  #touchRight .col { display: flex; flex-direction: column; gap: 10px; pointer-events: auto; }
+  #touchRight {
+    position: absolute; left: var(--touch-buttons-left); right: var(--touch-buttons-right); bottom: var(--touch-bottom);
+    display: flex; align-items: flex-end; gap: calc(12px * var(--touch-scale)); pointer-events: none;
+    opacity: var(--touch-opacity);
+  }
+  #touchRight .col { display: flex; flex-direction: column; gap: calc(10px * var(--touch-scale)); pointer-events: auto; }
   #touch button {
-    width: 58px; height: 58px; border-radius: 50%; border: 2px solid rgba(125, 249, 255, 0.5);
+    width: calc(58px * var(--touch-scale)); height: calc(58px * var(--touch-scale)); border-radius: 50%; border: 2px solid rgba(125, 249, 255, 0.5);
     background: rgba(125, 249, 255, 0.10); color: var(--cyan); font-family: "Courier New", monospace;
     font-size: 18px; user-select: none; -webkit-user-select: none; touch-action: none; pointer-events: auto;
   }
   #touch button:active { background: rgba(125, 249, 255, 0.3); }
   #touch #fireBtnT {
-    width: 84px; height: 84px; font-size: 26px;
+    width: calc(84px * var(--touch-scale)); height: calc(84px * var(--touch-scale)); font-size: calc(26px * var(--touch-scale));
     border-color: rgba(255, 93, 115, 0.6); color: var(--red); background: rgba(255, 93, 115, 0.12);
   }
+  #touch #fireBtnT.auto-fire { box-shadow: 0 0 18px rgba(255, 93, 115, 0.75); background: rgba(255, 93, 115, 0.26); }
+  .touch-settings { display: grid; grid-template-columns: repeat(2, minmax(180px, 1fr)); gap: 10px 16px; max-width: 560px; width: min(560px, 100%); }
+  .touch-settings label { display: flex; justify-content: space-between; align-items: center; gap: 10px; color: #9fb3c8; font-size: 12px; letter-spacing: 1px; }
+  .touch-settings input, .touch-settings select { accent-color: var(--cyan); background: rgba(125,249,255,0.08); color: #e6f7ff; border: 1px solid rgba(125,249,255,0.35); border-radius: 5px; padding: 4px; }
+  @media (max-width: 560px) { .touch-settings { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -274,6 +296,13 @@
       <span class="key">Space</span> / click fire &nbsp; <span class="key">C</span> toggle cockpit / chase<br /><br />
       On mobile: left stick steers, right buttons fire / boost / roll / view.
     </p>
+    <div class="touch-settings panel" aria-label="Touch control settings">
+      <label>Button scale <input id="touchScaleSetting" type="range" min="0.75" max="1.35" step="0.05" /></label>
+      <label>Opacity <input id="touchOpacitySetting" type="range" min="0.35" max="1" step="0.05" /></label>
+      <label>Handedness <select id="touchHandedSetting"><option value="right">Right-handed</option><option value="left">Left-handed</option></select></label>
+      <label>Joystick <select id="touchStickModeSetting"><option value="fixed">Fixed</option><option value="floating">Floating</option></select></label>
+      <label>Auto-fire <input id="touchAutoFireSetting" type="checkbox" /></label>
+    </div>
     <button id="startBtn" disabled>ESTABLISHING UPLINK&hellip;</button>
   </div>
 
@@ -320,6 +349,19 @@
   const FOV_BASE = 70, FOV_BOOST = 84;
   const RADAR_RANGE = 280;
   const HISCORE_KEY = "starfall_defender_hiscore";
+  const SETTINGS_KEY = "starfall_defender_settings";
+  const defaultSettings = {
+    touchButtonScale: 1,
+    touchOpacity: 0.86,
+    touchLeftHanded: false,
+    touchJoystickMode: "fixed",
+    touchAutoFire: false,
+  };
+  function loadSettings() {
+    try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}"); }
+    catch { return {}; }
+  }
+  const settings = { ...defaultSettings, ...loadSettings() };
 
   const TEX_BASE = "https://unpkg.com/three@0.160.0/examples/textures/planets/";
   const LOW_FX = window.matchMedia("(pointer: coarse)").matches ||
@@ -837,6 +879,53 @@
   };
   const radarCtx = ui.radar.getContext("2d");
 
+  function saveSettings() {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  }
+
+  function applyTouchSettings() {
+    const root = document.documentElement.style;
+    const scale = clamp(Number(settings.touchButtonScale) || 1, 0.75, 1.35);
+    const opacity = clamp(Number(settings.touchOpacity) || 0.86, 0.35, 1);
+    settings.touchButtonScale = scale;
+    settings.touchOpacity = opacity;
+    root.setProperty("--touch-scale", scale);
+    root.setProperty("--touch-opacity", opacity);
+    root.setProperty("--touch-stick-left", settings.touchLeftHanded ? "auto" : "22px");
+    root.setProperty("--touch-stick-right", settings.touchLeftHanded ? "22px" : "auto");
+    root.setProperty("--touch-buttons-left", settings.touchLeftHanded ? "18px" : "auto");
+    root.setProperty("--touch-buttons-right", settings.touchLeftHanded ? "auto" : "18px");
+    root.setProperty("--touch-stick-x", "0px");
+    root.setProperty("--touch-stick-y", "0px");
+    const stick = document.getElementById("stick");
+    if (stick && settings.touchJoystickMode !== "floating") {
+      stick.style.left = ""; stick.style.right = ""; stick.style.top = ""; stick.style.bottom = "";
+    }
+    document.getElementById("fireBtnT")?.classList.toggle("auto-fire", !!settings.touchAutoFire);
+  }
+
+  function bindTouchSettingsUi() {
+    const scale = document.getElementById("touchScaleSetting");
+    const opacity = document.getElementById("touchOpacitySetting");
+    const handed = document.getElementById("touchHandedSetting");
+    const stickMode = document.getElementById("touchStickModeSetting");
+    const autoFire = document.getElementById("touchAutoFireSetting");
+    scale.value = settings.touchButtonScale;
+    opacity.value = settings.touchOpacity;
+    handed.value = settings.touchLeftHanded ? "left" : "right";
+    stickMode.value = settings.touchJoystickMode;
+    autoFire.checked = settings.touchAutoFire;
+
+    scale.addEventListener("input", () => { settings.touchButtonScale = Number(scale.value); applyTouchSettings(); saveSettings(); });
+    opacity.addEventListener("input", () => { settings.touchOpacity = Number(opacity.value); applyTouchSettings(); saveSettings(); });
+    handed.addEventListener("change", () => { settings.touchLeftHanded = handed.value === "left"; applyTouchSettings(); saveSettings(); });
+    stickMode.addEventListener("change", () => { settings.touchJoystickMode = stickMode.value; applyTouchSettings(); saveSettings(); });
+    autoFire.addEventListener("change", () => { settings.touchAutoFire = autoFire.checked; controlAxes.fire = autoFire.checked; applyTouchSettings(); saveSettings(); });
+  }
+
+  applyTouchSettings();
+  bindTouchSettingsUi();
+
   const termLines = [];
   function term(msg) {
     termLines.push(msg);
@@ -994,9 +1083,10 @@
   function setupTouch() {
     const stick = document.getElementById("stick"), nub = document.getElementById("nub");
     let stickId = null, cx = 0, cy = 0;   // track the specific pointer driving the stick
-    const R = 52;
+    const stickRadius = () => 52 * settings.touchButtonScale;
     const move = (e) => {
       if (stickId === null || e.pointerId !== stickId) return;
+      const R = stickRadius();
       let dx = e.clientX - cx, dy = e.clientY - cy;
       const len = Math.hypot(dx, dy); if (len > R) { dx *= R / len; dy *= R / len; }
       nub.style.transform = `translate(${dx}px, ${dy}px)`;
@@ -1006,10 +1096,21 @@
     const endStick = (e) => {
       if (stickId === null || e.pointerId !== stickId) return;   // ignore other fingers
       stickId = null; nub.style.transform = "translate(0,0)"; controlAxes.yaw = 0; controlAxes.pitch = 0;
+      if (settings.touchJoystickMode !== "floating") applyTouchSettings();
     };
     stick.addEventListener("pointerdown", (e) => {
       stickId = e.pointerId;
-      const r = stick.getBoundingClientRect(); cx = r.left + r.width / 2; cy = r.top + r.height / 2;
+      if (settings.touchJoystickMode === "floating") {
+        const size = stick.offsetWidth;
+        cx = e.clientX; cy = e.clientY;
+        const x = clamp(e.clientX - size / 2, 8, window.innerWidth - size - 8);
+        const y = clamp(e.clientY - size / 2, 8, window.innerHeight - size - 8);
+        stick.style.left = x + "px"; stick.style.right = "auto"; stick.style.bottom = "auto"; stick.style.top = y + "px";
+      } else {
+        stick.style.left = ""; stick.style.right = ""; stick.style.top = ""; stick.style.bottom = "";
+        applyTouchSettings();
+        const r = stick.getBoundingClientRect(); cx = r.left + r.width / 2; cy = r.top + r.height / 2;
+      }
       move(e); e.preventDefault();
     });
     window.addEventListener("pointermove", move);
@@ -1022,7 +1123,7 @@
       el.addEventListener("pointerup", (e) => { off(); e.preventDefault(); });
       el.addEventListener("pointerleave", () => off());
     };
-    hold("fireBtnT", () => controlAxes.fire = true, () => controlAxes.fire = false);
+    hold("fireBtnT", () => controlAxes.fire = true, () => controlAxes.fire = !!settings.touchAutoFire);
     hold("boostBtnT", () => controlAxes.boost = true, () => controlAxes.boost = false);
     hold("rollLBtn", () => controlAxes.roll = 1, () => controlAxes.roll = 0);
     hold("rollRBtn", () => controlAxes.roll = -1, () => controlAxes.roll = 0);
@@ -1030,6 +1131,7 @@
     tap("thrUpBtn", () => controlAxes.throttle = clamp(controlAxes.throttle + 0.15, 0, 1));
     tap("thrDownBtn", () => controlAxes.throttle = clamp(controlAxes.throttle - 0.15, 0, 1));
     tap("viewBtnT", () => toggleView());
+    controlAxes.fire = !!settings.touchAutoFire;
   }
   setupTouch();
   window.addEventListener("touchstart", () => document.body.classList.add("show-touch"), { once: true });
