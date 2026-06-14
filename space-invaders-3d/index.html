@@ -665,10 +665,11 @@
     return new THREE.CanvasTexture(c);
   }
 
-  let planet, clouds, moon;
+  let planet, clouds, moon, atmosphere;
   let satellites = [];
   let allies = [];
   let defenseRing = null;
+  const damagedRegions = [];
   let assetsReady = false;
 
   // Orbital structures around the homeworld — adds shapes/detail near the planet
@@ -715,7 +716,7 @@
     const planetMat = new THREE.ShaderMaterial({
       uniforms: {
         uDay: { value: day }, uNight: { value: night }, uSpec: { value: spec }, uNormal: { value: nrm },
-        uSunDir: { value: SUN_DIR.clone() },
+        uSunDir: { value: SUN_DIR.clone() }, uCityPulse: { value: 1.0 },
       },
       vertexShader: `
         varying vec2 vUv; varying vec3 vWorldNormal;
@@ -725,7 +726,7 @@
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }`,
       fragmentShader: `
-        uniform sampler2D uDay, uNight, uSpec, uNormal; uniform vec3 uSunDir;
+        uniform sampler2D uDay, uNight, uSpec, uNormal; uniform vec3 uSunDir; uniform float uCityPulse;
         varying vec2 vUv; varying vec3 vWorldNormal;
         vec3 lin(vec3 c){ return pow(c, vec3(2.2)); }
         void main() {
@@ -735,7 +736,7 @@
           float d = dot(normalize(vWorldNormal), normalize(uSunDir)) + relief;
           float day = smoothstep(-0.12, 0.30, d);
           vec3 dayc = lin(texture2D(uDay, vUv).rgb) * (0.80 + 0.4 * clamp(0.5 + nmap.y, 0.0, 1.0));
-          vec3 nightc = lin(texture2D(uNight, vUv).rgb) * 2.2;   // boost city lights for bloom
+          vec3 nightc = lin(texture2D(uNight, vUv).rgb) * (2.2 * uCityPulse);   // boost/flicker city lights for bloom
           float spec = texture2D(uSpec, vUv).r;
           float glint = pow(max(d, 0.0), 18.0) * spec;
           vec3 col = mix(nightc, dayc, day) + vec3(0.9, 0.95, 1.0) * glint * 0.6;
@@ -755,22 +756,23 @@
     }
 
     // Atmosphere — classic fresnel glow on a back-side shell
-    const atmo = new THREE.Mesh(
+    atmosphere = new THREE.Mesh(
       new THREE.SphereGeometry(PR * 1.16, 48, 32),
       new THREE.ShaderMaterial({
         transparent: true, side: THREE.BackSide, blending: THREE.AdditiveBlending, depthWrite: false,
-        uniforms: { uColor: { value: new THREE.Color(0x3aa0ff) } },
+        uniforms: { uColor: { value: new THREE.Color(0x3aa0ff) }, uFlash: { value: 0.0 } },
         vertexShader: `
           varying vec3 vN;
           void main(){ vN = normalize(normalMatrix * normal);
             gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
         fragmentShader: `
-          uniform vec3 uColor; varying vec3 vN;
+          uniform vec3 uColor; uniform float uFlash; varying vec3 vN;
           void main(){ float i = pow(0.72 - dot(vN, vec3(0.0,0.0,1.0)), 4.0);
-            gl_FragColor = vec4(uColor, 1.0) * clamp(i, 0.0, 1.0); }`,
+            vec3 flash = mix(uColor, vec3(1.0, 0.08, 0.02), uFlash);
+            gl_FragColor = vec4(flash, 1.0) * clamp(i * (1.0 + uFlash * 2.8), 0.0, 1.0); }`,
       })
     );
-    planetGroup.add(atmo);
+    planetGroup.add(atmosphere);
 
     if (moonT) {
       moonT.colorSpace = THREE.SRGBColorSpace;
@@ -1189,6 +1191,8 @@
     enemyFireBudget: 0, weaponBoostTimer: 0, boostSurgeTimer: 0,
     waveTookDamage: false, bossSpawned: false,
     allies,
+    planetWarningFlags: { 75: false, 50: false, 25: false },
+    planetFlash: 0, cityFlicker: 0, defensePulse: 0,
   };
 
   // ---------------------------------------------------------------------------
@@ -1285,11 +1289,44 @@
     syncHud();
     if (state.hull <= 0) endGame("SHIP DESTROYED", "Your fighter was torn apart in the void.");
   }
-  function damagePlanet(amount) {
+  function addPlanetDamageMark(surfacePos) {
+    const local = planetGroup.worldToLocal(surfacePos.clone()).normalize().multiplyScalar(PR * 1.018);
+    const mark = new THREE.Mesh(
+      new THREE.CircleGeometry(7 + Math.random() * 4, 24),
+      new THREE.MeshBasicMaterial({ color: 0x140006, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide })
+    );
+    mark.position.copy(local);
+    mark.lookAt(0, 0, 0);
+    mark.rotateZ(Math.random() * Math.PI);
+    mark.userData.life = 18;
+    planetGroup.add(mark);
+    damagedRegions.push(mark);
+    while (damagedRegions.length > 10) planetGroup.remove(damagedRegions.shift());
+  }
+
+  function damagePlanet(amount, impactPos) {
+    const before = state.integrity;
     state.integrity = Math.max(0, state.integrity - amount);
     state.waveTookDamage = true;
-    state.shake = Math.max(state.shake, 0.8); Sfx.impact();
+    state.shake = Math.max(state.shake, 1.2);
+    state.planetFlash = 1.0; state.cityFlicker = 1.4; state.defensePulse = 1.0;
+    Sfx.impact();
+
+    const surfacePos = impactPos ? impactPos.clone() : planetGroup.position.clone();
+    if (impactPos) addPlanetDamageMark(surfacePos);
+    for (let i = 0; i < 3; i++) {
+      tmpA.copy(surfacePos).sub(planetGroup.position).normalize();
+      tmpB.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).cross(tmpA).normalize();
+      spawnExplosion(surfacePos.clone().addScaledVector(tmpB, (Math.random() - 0.5) * 12).addScaledVector(tmpA, 2 + Math.random() * 5), i ? 0xff5d2a : 0xfff0aa, 22);
+    }
+
     term("PLANET STRUCK — INTEGRITY " + Math.round(state.integrity) + "%");
+    for (const threshold of [75, 50, 25]) {
+      if (before > threshold && state.integrity <= threshold && !state.planetWarningFlags[threshold]) {
+        state.planetWarningFlags[threshold] = true;
+        term("WARNING: PLANET INTEGRITY BELOW " + threshold + "%");
+      }
+    }
     syncHud();
     if (state.integrity <= 0) endGame("PLANET LOST", "The bombers broke through to the homeworld.");
   }
@@ -1516,6 +1553,8 @@
     state.fireCooldown = 0; state.weaponType = "laser"; state.shieldRegenTimer = 0; state.invulnerableTimer = 0; state.shake = 0; state.target = null; state.waveTookDamage = false;
     state.boostEnergy = 100; state.boostOverheated = false; state.boostActive = false; state._wasBoost = false;
     state.weaponBoostTimer = 0; state.boostSurgeTimer = 0;
+    state.planetWarningFlags = { 75: false, 50: false, 25: false };
+    state.planetFlash = 0; state.cityFlicker = 0; state.defensePulse = 0;
     controlAxes.throttle = 0.6;
     shipPos.set(0, 0, 60); shipVel.set(0, 0, 0);
     shipQuat.identity(); mouseAim.x = 0; mouseAim.y = 0;
@@ -1523,6 +1562,8 @@
 
     invaderPool.releaseAll(); playerBullets.releaseAll(); enemyBullets.releaseAll(); allyBullets.releaseAll(); particlePool.releaseAll(); powerupPool.releaseAll();
     resetAllies();
+    for (const mark of damagedRegions) planetGroup.remove(mark);
+    damagedRegions.length = 0;
     spawnAsteroidField();
     spawnEnvironmentLandmarks();
     termLines.length = 0; term("SYSTEMS ONLINE"); term("DEFEND THE HOMEWORLD");
@@ -1568,7 +1609,27 @@
     stars.rotation.y += dt * 0.002;
     if (planet) planet.rotation.y += dt * 0.012;
     if (clouds) clouds.rotation.y += dt * 0.018;
-    if (defenseRing) defenseRing.rotation.z += dt * 0.05;
+    if (defenseRing) {
+      defenseRing.rotation.z += dt * 0.05;
+      state.defensePulse = Math.max(0, state.defensePulse - dt * 1.5);
+      const pulse = state.defensePulse;
+      defenseRing.scale.setScalar(1 + pulse * 0.08);
+      defenseRing.material.emissiveIntensity = 0.7 + pulse * 2.6;
+    }
+    if (atmosphere) {
+      state.planetFlash = Math.max(0, state.planetFlash - dt * 1.7);
+      atmosphere.material.uniforms.uFlash.value = state.planetFlash;
+    }
+    if (planet?.material?.uniforms?.uCityPulse) {
+      state.cityFlicker = Math.max(0, state.cityFlicker - dt * 1.2);
+      planet.material.uniforms.uCityPulse.value = 1 + Math.sin(t * 42) * state.cityFlicker * 0.45 - state.cityFlicker * 0.25;
+    }
+    for (let i = damagedRegions.length - 1; i >= 0; i--) {
+      const mark = damagedRegions[i];
+      mark.userData.life -= dt;
+      mark.material.opacity = Math.max(0.22, Math.min(0.6, mark.userData.life / 18 * 0.55));
+      if (mark.userData.life <= 0) { planetGroup.remove(mark); damagedRegions.splice(i, 1); }
+    }
     for (const s of satellites) {
       s.userData.angle += dt * s.userData.speed;
       const a = s.userData.angle;
@@ -1665,6 +1726,7 @@
 
       // --- Invader AI ---
       const planetWorld = tmpC.copy(planetGroup.position);
+      let bomberThreat = false;
       state.enemyFireBudget += dt;
       for (let i = invaderPool.active.length - 1; i >= 0; i--) {
         const inv = invaderPool.active[i];
@@ -1706,10 +1768,13 @@
             inv.userData.ring.material.emissive.set(0x330008);
           }
           // reached the planet?
-          if (inv.position.distanceTo(planetWorld) < PR + 6) {
-            spawnExplosion(inv.position, 0xff8c1a, 18); invaderPool.release(inv);
+          const planetDist = inv.position.distanceTo(planetWorld);
+          if (planetDist < PR * 1.8) bomberThreat = true;
+          if (planetDist < PR + 6) {
+            tmpB.copy(inv.position).sub(planetWorld).normalize().multiplyScalar(PR).add(planetWorld);
+            spawnExplosion(inv.position, 0xff8c1a, 26); invaderPool.release(inv);
             if (state.target === inv) state.target = null;
-            damagePlanet(9); if (!state.running) return; continue;
+            damagePlanet(9, tmpB); if (!state.running) return; continue;
           }
         } else if (ud.role === "hunter" || ud.role === "boss") {
           const toShip = tmpA.copy(shipPos).sub(inv.position);
@@ -1812,6 +1877,7 @@
           }
         }
       }
+      if (bomberThreat) state.defensePulse = Math.max(state.defensePulse, 0.55);
 
       // --- Player bullets ---
       for (let i = playerBullets.active.length - 1; i >= 0; i--) {
