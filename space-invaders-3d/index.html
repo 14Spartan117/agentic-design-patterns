@@ -36,7 +36,16 @@
     font-size: 18px; letter-spacing: 2px;
   }
   #topbar #hiscore { color: var(--amber); text-shadow: 0 0 8px rgba(255, 209, 102, 0.7); }
-  @media (max-width: 560px) { #topbar { font-size: 13px; gap: 14px; padding: 8px; } }
+  #bossHud {
+    top: 48px; left: 50%; transform: translateX(-50%);
+    width: min(420px, calc(100vw - 36px)); padding: 8px 12px;
+    display: none; color: var(--red); letter-spacing: 2px;
+    text-shadow: 0 0 8px rgba(255, 93, 115, 0.8);
+  }
+  #bossHud .lbl { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 5px; }
+  #bossHud .track { height: 12px; border: 1px solid rgba(255, 93, 115, 0.65); border-radius: 999px; background: rgba(30, 4, 12, 0.7); overflow: hidden; }
+  #bossFill { height: 100%; width: 100%; background: linear-gradient(90deg, #ff2d55, #ffd166); box-shadow: 0 0 12px rgba(255, 93, 115, 0.9); transition: width 0.15s ease; }
+  @media (max-width: 560px) { #topbar { font-size: 13px; gap: 14px; padding: 8px; } #bossHud { top: 36px; padding: 6px 9px; } }
 
   /* Center target reticle */
   #reticle { left: 50%; top: 50%; width: 0; height: 0; }
@@ -214,6 +223,11 @@
   <div id="flightinfo" class="hud">
     <div>THR <span id="thr">60</span>%</div>
     <div>VIEW <span id="viewMode">COCKPIT</span></div>
+  </div>
+
+  <div id="bossHud" class="hud panel">
+    <div class="lbl"><span id="bossName">BOSS</span><span id="bossHp">100%</span></div>
+    <div class="track"><div id="bossFill"></div></div>
   </div>
 
   <div id="reticle" class="hud"><div id="aim"></div></div>
@@ -742,12 +756,14 @@
     b.userData.from = b.position.clone();
   }
   function spawnEnemyBullet(inv) {
-    const b = enemyBullets.acquire();
-    b.position.copy(inv.position);
-    // lead the player a little
     const dist = inv.position.distanceTo(player.position);
     const lead = tmpA.copy(player.position).addScaledVector(shipVel, dist / ENEMY_BULLET_SPEED * 0.6);
-    b.userData.vel = lead.sub(inv.position).normalize().multiplyScalar(ENEMY_BULLET_SPEED);
+    spawnEnemyBulletWithVelocity(inv, lead.sub(inv.position).normalize().multiplyScalar(ENEMY_BULLET_SPEED));
+  }
+  function spawnEnemyBulletWithVelocity(inv, vel) {
+    const b = enemyBullets.acquire();
+    b.position.copy(inv.position);
+    b.userData.vel = vel.clone();
     b.userData.from = b.position.clone();
   }
   function spawnExplosion(pos, color, n) {
@@ -811,8 +827,8 @@
     fireCooldown: 0, shieldRegenTimer: 0, shake: 0,
     cameraMode: "cockpit",
     target: null, lockTimer: 0,
-    toSpawn: 0, spawnTimer: 0, spawnInterval: 1.3, invSpeed: 14, hunterRatio: 0.5,
-    enemyFireBudget: 0,
+    toSpawn: 0, specialToSpawn: null, spawnTimer: 0, spawnInterval: 1.3, invSpeed: 14, hunterRatio: 0.5,
+    enemyFireBudget: 0, boss: null,
   };
 
   // ---------------------------------------------------------------------------
@@ -834,6 +850,8 @@
     gameOverScreen: document.getElementById("gameOverScreen"), finalScore: document.getElementById("finalScore"),
     gameOverTitle: document.getElementById("gameOverTitle"), gameOverMsg: document.getElementById("gameOverMsg"),
     newHi: document.getElementById("newHi"),
+    bossHud: document.getElementById("bossHud"), bossName: document.getElementById("bossName"),
+    bossHp: document.getElementById("bossHp"), bossFill: document.getElementById("bossFill"),
   };
   const radarCtx = ui.radar.getContext("2d");
 
@@ -908,11 +926,15 @@
   function beginWave(n) {
     state.wave = n;
     state.toSpawn = 4 + n * 2;
+    state.specialToSpawn = n % 5 === 0 ? (n % 10 === 0 ? "carrier" : "elite") : null;
+    if (state.specialToSpawn) state.toSpawn += 1;
     state.spawnTimer = 0.6;
     state.spawnInterval = Math.max(0.4, 1.4 - (n - 1) * 0.1);
     state.invSpeed = 13 + (n - 1) * 1.6;
     state.hunterRatio = Math.min(0.85, 0.45 + (n - 1) * 0.06);
-    syncHud(); toast("WAVE " + n); term("WAVE " + n + " INBOUND");
+    state.boss = null;
+    ui.bossHud.style.display = "none";
+    syncHud(); toast(state.specialToSpawn ? "WAVE " + n + " — " + state.specialToSpawn.toUpperCase() : "WAVE " + n); term("WAVE " + n + " INBOUND");
   }
 
   function spawnInvader() {
@@ -929,12 +951,39 @@
     inv.userData.vel = new THREE.Vector3();
     inv.userData.speed = state.invSpeed * (0.85 + Math.random() * 0.4);
     inv.userData.fireTimer = 1 + Math.random() * 2;
+    inv.scale.setScalar(1);
     inv.userData.hp = 1;
-    const r = Math.random();
-    inv.userData.role = r < state.hunterRatio ? "hunter" : r < state.hunterRatio + 0.25 ? "bomber" : "drifter";
+    inv.userData.maxHp = 1;
+    inv.userData.score = 0;
+    const specialRole = state.specialToSpawn;
+    if (specialRole) {
+      inv.userData.role = specialRole;
+      state.specialToSpawn = null;
+    } else {
+      const r = Math.random();
+      inv.userData.role = r < state.hunterRatio ? "hunter" : r < state.hunterRatio + 0.25 ? "bomber" : "drifter";
+    }
     inv.userData.spin = (Math.random() - 0.5) * 2;
-    if (inv.userData.role === "bomber") inv.userData.core.material.color.set(0xff8c1a), inv.userData.core.material.emissive.set(0xff8c1a);
-    else inv.userData.core.material.color.set(0xff2d3a), inv.userData.core.material.emissive.set(0xff2d3a);
+    if (inv.userData.role === "carrier" || inv.userData.role === "elite") {
+      const isCarrier = inv.userData.role === "carrier";
+      inv.userData.maxHp = isCarrier ? 18 + state.wave * 2 : 10 + state.wave;
+      inv.userData.hp = inv.userData.maxHp;
+      inv.userData.score = isCarrier ? 850 : 550;
+      inv.userData.speed = state.invSpeed * (isCarrier ? 0.55 : 0.8);
+      inv.userData.fireTimer = isCarrier ? 1.1 : 0.7;
+      inv.scale.setScalar(isCarrier ? 3.2 : 2.35);
+      inv.userData.core.material.color.set(isCarrier ? 0x9d4dff : 0x36f5ff);
+      inv.userData.core.material.emissive.set(isCarrier ? 0x6b1fd1 : 0x1fb8ff);
+      inv.userData.ring.material.color.set(isCarrier ? 0x2b123d : 0x0f2f40);
+      state.boss = inv;
+      ui.bossName.textContent = (isCarrier ? "CARRIER" : "ELITE") + " SIGNATURE";
+      ui.bossHud.style.display = "block";
+      term((isCarrier ? "CARRIER" : "ELITE") + " DETECTED — FOCUS FIRE");
+    } else if (inv.userData.role === "bomber") {
+      inv.userData.core.material.color.set(0xff8c1a); inv.userData.core.material.emissive.set(0xff8c1a); inv.userData.ring.material.color.set(0x1a1a22);
+    } else {
+      inv.userData.core.material.color.set(0xff2d3a); inv.userData.core.material.emissive.set(0xff2d3a); inv.userData.ring.material.color.set(0x1a1a22);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1167,11 +1216,17 @@
             if (state.target === inv) state.target = null;
             damagePlanet(9); if (!state.running) return; continue;
           }
-        } else if (ud.role === "hunter") {
+        } else if (ud.role === "hunter" || ud.role === "elite") {
           desired = tmpA.copy(shipPos).sub(inv.position);
           const d = desired.length(); desired.normalize();
           // keep a strafing distance
-          if (d < 35) desired.multiplyScalar(-1);
+          if (d < (ud.role === "elite" ? 55 : 35)) desired.multiplyScalar(-1);
+          if (ud.role === "elite") desired.add(tmpB.copy(rightV).multiplyScalar(Math.sin(t * 2.2) * 0.7)).normalize();
+        } else if (ud.role === "carrier") {
+          desired = tmpA.copy(shipPos).sub(inv.position);
+          const d = desired.length(); desired.normalize();
+          if (d < 80) desired.multiplyScalar(-0.45);
+          desired.add(tmpB.copy(upV).multiplyScalar(Math.sin(t * 1.4) * 0.35)).normalize();
         } else {
           // drifter: wander slowly, but steer back toward the fight if it strays
           // out of engagement range, so an unshot drifter can never stall a wave
@@ -1186,12 +1241,28 @@
         inv.position.addScaledVector(ud.vel, dt);
         inv.rotation.y += dt * ud.spin; inv.userData.ring.rotation.x += dt * 2;
 
-        // hunter fire
-        if (ud.role === "hunter") {
+        // hostile fire patterns
+        if (ud.role === "hunter" || ud.role === "elite" || ud.role === "carrier") {
           ud.fireTimer -= dt;
-          if (ud.fireTimer <= 0 && state.enemyFireBudget > 0.25 && inv.position.distanceTo(shipPos) < 160) {
-            spawnEnemyBullet(inv); state.enemyFireBudget = 0;
-            ud.fireTimer = 1.6 + Math.random() * 2;
+          const fireRange = ud.role === "hunter" ? 160 : 210;
+          if (ud.fireTimer <= 0 && state.enemyFireBudget > 0.25 && inv.position.distanceTo(shipPos) < fireRange) {
+            if (ud.role === "carrier") {
+              const base = tmpA.copy(shipPos).sub(inv.position).normalize();
+              for (const ang of [-0.28, -0.14, 0, 0.14, 0.28]) {
+                const vel = base.clone().applyAxisAngle(upV, ang).multiplyScalar(ENEMY_BULLET_SPEED * 0.85);
+                spawnEnemyBulletWithVelocity(inv, vel);
+              }
+              ud.fireTimer = 1.8 + Math.random() * 0.7;
+            } else if (ud.role === "elite") {
+              const base = tmpA.copy(shipPos).sub(inv.position).normalize();
+              spawnEnemyBulletWithVelocity(inv, base.clone().applyAxisAngle(rightV, 0.12).multiplyScalar(ENEMY_BULLET_SPEED * 1.15));
+              spawnEnemyBulletWithVelocity(inv, base.clone().applyAxisAngle(rightV, -0.12).multiplyScalar(ENEMY_BULLET_SPEED * 1.15));
+              ud.fireTimer = 0.75 + Math.random() * 0.45;
+            } else {
+              spawnEnemyBullet(inv);
+              ud.fireTimer = 1.6 + Math.random() * 2;
+            }
+            state.enemyFireBudget = 0;
           }
         }
       }
@@ -1203,13 +1274,16 @@
         let hit = false;
         for (let j = invaderPool.active.length - 1; j >= 0; j--) {
           const inv = invaderPool.active[j];
-          if (b.position.distanceToSquared(inv.position) < 2.2 * 2.2) {
-            spawnExplosion(inv.position, inv.userData.core.material.color.getHex(), 16);
+          const hitRadius = 2.2 * Math.max(1, inv.scale.x * 0.8);
+          if (b.position.distanceToSquared(inv.position) < hitRadius * hitRadius) {
+            inv.userData.hp -= 1;
+            spawnExplosion(inv.position, inv.userData.core.material.color.getHex(), inv.userData.hp > 0 ? 5 : 16);
+            if (inv.userData.hp > 0) { Sfx.hit(); hit = true; break; }
             Sfx.explosion();
-            const dist = inv.position.distanceTo(shipPos);
-            const points = inv.userData.role === "bomber" ? 75 : inv.userData.role === "hunter" ? 50 : 30;
-            addScore(points, inv.position, "#ffd166");
+            const points = inv.userData.score || (inv.userData.role === "bomber" ? 75 : inv.userData.role === "hunter" ? 50 : 30);
+            addScore(points, inv.position, inv.userData.score ? "#ff5dff" : "#ffd166");
             if (state.target === inv) state.target = null;
+            if (state.boss === inv) { state.boss = null; ui.bossHud.style.display = "none"; term(inv.userData.role.toUpperCase() + " DESTROYED — BONUS AWARDED"); }
             invaderPool.release(inv); hit = true; break;
           }
         }
@@ -1252,7 +1326,8 @@
         if (shipPos.distanceToSquared(inv.position) < 3 * 3) {
           spawnExplosion(inv.position, 0xff2d3a, 14); Sfx.explosion();
           if (state.target === inv) state.target = null;
-          invaderPool.release(inv); damageHull(22); if (!state.running) return;
+          if (state.boss === inv) { state.boss = null; ui.bossHud.style.display = "none"; }
+          invaderPool.release(inv); damageHull(inv.userData.score ? 34 : 22); if (!state.running) return;
         }
       }
 
@@ -1303,6 +1378,16 @@
   }
 
   function updateHudOverlays() {
+    if (state.boss && invaderPool.active.includes(state.boss)) {
+      const pct = clamp(state.boss.userData.hp / state.boss.userData.maxHp * 100, 0, 100);
+      ui.bossHud.style.display = "block";
+      ui.bossFill.style.width = pct + "%";
+      ui.bossHp.textContent = Math.ceil(pct) + "%";
+    } else {
+      ui.bossHud.style.display = "none";
+      state.boss = null;
+    }
+
     // Lock box + distance + lead
     if (state.target) {
       const s = worldToScreen(state.target.position);
@@ -1337,7 +1422,7 @@
       const py = cy - (-tmpA.z / RADAR_RANGE) * rad; // forward(-z) -> up
       ctx.fillStyle = color; ctx.fillRect(px - 1.5, py - 1.5, 3, 3);
     };
-    for (const inv of invaderPool.active) plot(inv.position, inv.userData.role === "bomber" ? "#ff8c1a" : "#ff3340");
+    for (const inv of invaderPool.active) plot(inv.position, inv.userData.role === "carrier" ? "#b36bff" : inv.userData.role === "elite" ? "#36f5ff" : inv.userData.role === "bomber" ? "#ff8c1a" : "#ff3340");
     for (const a of asteroids) plot(a.position, "rgba(150,150,160,0.7)");
 
     // Terminal: bearing of nearest hostile
