@@ -173,7 +173,12 @@
   #newHi.hidden { display: none; }
 
   /* Pause overlay (pointer-lock lost on desktop) */
-  #pauseScreen { background: rgba(2, 4, 12, 0.6); cursor: pointer; }
+  #pauseScreen { background: rgba(2, 4, 12, 0.78); }
+  #pauseScreen .pause-menu { display: flex; flex-direction: column; gap: 10px; min-width: min(320px, 90vw); }
+  #pauseScreen .pause-menu button { width: 100%; margin-top: 0; font-size: 17px; }
+  #pauseScreen .pause-menu button.secondary { background: rgba(125, 249, 255, 0.12); color: var(--cyan); border: 1px solid rgba(125, 249, 255, 0.45); }
+  #pauseScreen .pause-panel { display: none; max-width: 560px; }
+  #pauseScreen .pause-panel.active { display: block; }
 
   /* Touch controls */
   #touch { position: fixed; inset: 0; display: none; z-index: 15; pointer-events: none; }
@@ -279,7 +284,19 @@
 
   <div id="pauseScreen" class="overlay hidden">
     <h2>PAUSED</h2>
-    <p>Click to resume flight control.</p>
+    <p>Flight control is paused. Choose an option below.</p>
+    <div class="pause-menu" role="menu" aria-label="Pause menu">
+      <button id="resumeBtn" type="button">RESUME</button>
+      <button id="pauseRestartBtn" type="button" class="secondary">RESTART RUN</button>
+      <button id="settingsBtn" type="button" class="secondary" aria-expanded="false" aria-controls="settingsPanel">SETTINGS</button>
+      <button id="controlsBtn" type="button" class="secondary" aria-expanded="false" aria-controls="controlsPanel">CONTROLS</button>
+      <button id="quitTitleBtn" type="button" class="secondary">QUIT TO TITLE</button>
+    </div>
+    <p id="settingsPanel" class="pause-panel">Settings are adjusted in flight: use <span class="key">R</span>/<span class="key">F</span> or the mouse wheel for throttle and <span class="key">C</span> to toggle view.</p>
+    <p id="controlsPanel" class="pause-panel">
+      <span class="key">W</span><span class="key">S</span> pitch &nbsp; <span class="key">A</span><span class="key">D</span> yaw &nbsp; <span class="key">Q</span><span class="key">E</span> roll<br />
+      <span class="key">Mouse</span> aim &nbsp; <span class="key">Shift</span> boost &nbsp; <span class="key">Space</span> / click fire
+    </p>
   </div>
 
   <div id="gameOverScreen" class="overlay hidden">
@@ -834,6 +851,10 @@
     gameOverScreen: document.getElementById("gameOverScreen"), finalScore: document.getElementById("finalScore"),
     gameOverTitle: document.getElementById("gameOverTitle"), gameOverMsg: document.getElementById("gameOverMsg"),
     newHi: document.getElementById("newHi"),
+    resumeBtn: document.getElementById("resumeBtn"), pauseRestartBtn: document.getElementById("pauseRestartBtn"),
+    settingsBtn: document.getElementById("settingsBtn"), controlsBtn: document.getElementById("controlsBtn"),
+    quitTitleBtn: document.getElementById("quitTitleBtn"),
+    settingsPanel: document.getElementById("settingsPanel"), controlsPanel: document.getElementById("controlsPanel"),
   };
   const radarCtx = ui.radar.getContext("2d");
 
@@ -982,12 +1003,11 @@
     });
     document.addEventListener("pointerlockchange", () => {
       if (document.pointerLockElement === canvas) {
-        if (state.paused) { state.paused = false; ui.pauseScreen.classList.add("hidden"); }
-      } else if (state.running) {
-        state.paused = true; ui.pauseScreen.classList.remove("hidden");
+        if (state.paused) resumeGame();
+      } else if (state.running && !state.paused) {
+        openPauseMenu();
       }
     });
-    ui.pauseScreen.addEventListener("click", () => { if (state.running) canvas.requestPointerLock(); });
   }
 
   // Touch controls
@@ -1043,6 +1063,50 @@
   // ---------------------------------------------------------------------------
   // Game flow
   // ---------------------------------------------------------------------------
+  function resetPausePanels() {
+    ui.settingsPanel.classList.remove("active");
+    ui.controlsPanel.classList.remove("active");
+    ui.settingsBtn.setAttribute("aria-expanded", "false");
+    ui.controlsBtn.setAttribute("aria-expanded", "false");
+  }
+
+  function togglePausePanel(panel, button) {
+    const opening = !panel.classList.contains("active");
+    resetPausePanels();
+    panel.classList.toggle("active", opening);
+    button.setAttribute("aria-expanded", String(opening));
+  }
+
+  function openPauseMenu() {
+    if (!state.running) return;
+    state.paused = true;
+    mouseFire = false;
+    ui.pauseScreen.classList.remove("hidden");
+  }
+
+  function resumeGame() {
+    if (!state.running) return;
+    state.paused = false;
+    resetPausePanels();
+    ui.pauseScreen.classList.add("hidden");
+  }
+
+  function requestResume() {
+    if (!state.running) return;
+    if (IS_TOUCH) resumeGame();
+    else if (document.pointerLockElement === canvas) resumeGame();
+    else canvas.requestPointerLock();
+  }
+
+  function quitToTitle() {
+    state.running = false; state.paused = false; mouseFire = false;
+    resetPausePanels();
+    ui.pauseScreen.classList.add("hidden");
+    ui.gameOverScreen.classList.add("hidden");
+    ui.startScreen.classList.remove("hidden");
+    if (document.pointerLockElement === canvas) document.exitPointerLock();
+  }
+
   function startGame() {
     if (!assetsReady) return;
     Sfx.init(); Sfx.resume();
@@ -1058,6 +1122,7 @@
     spawnAsteroidField();
     termLines.length = 0; term("SYSTEMS ONLINE"); term("DEFEND THE HOMEWORLD");
     beginWave(1); syncHud();
+    resetPausePanels();
     ui.startScreen.classList.add("hidden"); ui.gameOverScreen.classList.add("hidden"); ui.pauseScreen.classList.add("hidden");
     if (!IS_TOUCH) canvas.requestPointerLock();
   }
@@ -1076,6 +1141,11 @@
   }
   document.getElementById("startBtn").addEventListener("click", startGame);
   document.getElementById("restartBtn").addEventListener("click", startGame);
+  ui.resumeBtn.addEventListener("click", requestResume);
+  ui.pauseRestartBtn.addEventListener("click", startGame);
+  ui.settingsBtn.addEventListener("click", () => togglePausePanel(ui.settingsPanel, ui.settingsBtn));
+  ui.controlsBtn.addEventListener("click", () => togglePausePanel(ui.controlsPanel, ui.controlsBtn));
+  ui.quitTitleBtn.addEventListener("click", quitToTitle);
 
   // ---------------------------------------------------------------------------
   // Targeting
