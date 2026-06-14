@@ -766,15 +766,90 @@
   // ---------------------------------------------------------------------------
   const Sfx = {
     ctx: null,
-    init() { if (this.ctx) return; const AC = window.AudioContext || window.webkitAudioContext; if (AC) this.ctx = new AC(); },
+    master: null,
+    layers: null,
+    _stepTimer: null,
+    _step: 0,
+    init() {
+      if (this.ctx) return;
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      this.ctx = new AC();
+      this.master = this.ctx.createGain();
+      this.master.gain.value = 0.42;
+      this.master.connect(this.ctx.destination);
+      this.layers = {
+        menu: this.makeLayer(0.0001),
+        combat: this.makeLayer(0.0001),
+        bomber: this.makeLayer(0.0001),
+        boss: this.makeLayer(0.0001),
+        danger: this.makeLayer(0.0001),
+      };
+      this.addDrone(this.layers.menu, 72, "sine", 0.32);
+      this.addDrone(this.layers.menu, 144, "triangle", 0.08);
+      this.addDrone(this.layers.combat, 55, "sawtooth", 0.16);
+      this.addDrone(this.layers.combat, 82.41, "triangle", 0.06);
+      this.addDrone(this.layers.bomber, 420, "sine", 0.12, 0.45);
+      this.addDrone(this.layers.bomber, 630, "triangle", 0.05, 0.6);
+      this.addDrone(this.layers.boss, 36.71, "sawtooth", 0.22);
+      this.addDrone(this.layers.danger, 196, "square", 0.06, 2.5);
+      this._stepTimer = setInterval(() => this.musicStep(), 240);
+    },
+    makeLayer(initial) {
+      const g = this.ctx.createGain();
+      g.gain.value = initial;
+      g.connect(this.master);
+      return { gain: g, target: initial };
+    },
+    addDrone(layer, freq, type, gain, lfoRate) {
+      const osc = this.ctx.createOscillator(), g = this.ctx.createGain();
+      osc.type = type; osc.frequency.value = freq; g.gain.value = gain;
+      osc.connect(g).connect(layer.gain);
+      if (lfoRate) {
+        const lfo = this.ctx.createOscillator(), lfoGain = this.ctx.createGain();
+        lfo.frequency.value = lfoRate; lfoGain.gain.value = freq * 0.08;
+        lfo.connect(lfoGain).connect(osc.frequency); lfo.start();
+      }
+      osc.start();
+    },
     resume() { if (this.ctx && this.ctx.state === "suspended") this.ctx.resume(); },
-    tone({ freq = 440, type = "square", dur = 0.12, gain = 0.16, slideTo = null }) {
+    tone({ freq = 440, type = "square", dur = 0.12, gain = 0.16, slideTo = null, layer = null }) {
       if (!this.ctx) return;
       const t = this.ctx.currentTime, osc = this.ctx.createOscillator(), g = this.ctx.createGain();
       osc.type = type; osc.frequency.setValueAtTime(freq, t);
       if (slideTo) osc.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
       g.gain.setValueAtTime(gain, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-      osc.connect(g).connect(this.ctx.destination); osc.start(t); osc.stop(t + dur);
+      osc.connect(g).connect(layer || this.master || this.ctx.destination); osc.start(t); osc.stop(t + dur);
+    },
+    musicStep() {
+      if (!this.ctx || this.ctx.state !== "running" || !this.layers) return;
+      const step = this._step++;
+      const bass = [55, 55, 65.41, 49, 55, 82.41, 73.42, 49][step % 8];
+      if (this.layers.combat.target > 0.001 && step % 2 === 0) this.tone({ freq: bass, type: "triangle", dur: 0.18, gain: 0.09, layer: this.layers.combat.gain });
+      if (this.layers.menu.target > 0.001 && step % 6 === 0) this.tone({ freq: [216, 288, 324, 432][(step / 6) % 4 | 0], type: "sine", dur: 0.8, gain: 0.025, layer: this.layers.menu.gain });
+      if (this.layers.bomber.target > 0.001 && step % 4 === 0) this.tone({ freq: 880, slideTo: 440, type: "sawtooth", dur: 0.28, gain: 0.055, layer: this.layers.bomber.gain });
+      if (this.layers.boss.target > 0.001 && step % 8 === 0) this.tone({ freq: 110, slideTo: 36.71, type: "sawtooth", dur: 0.65, gain: 0.12, layer: this.layers.boss.gain });
+      if (this.layers.danger.target > 0.001 && step % 3 === 0) this.tone({ freq: 1240, type: "square", dur: 0.07, gain: 0.035, layer: this.layers.danger.gain });
+    },
+    setLayer(name, value) {
+      if (!this.ctx || !this.layers || !this.layers[name]) return;
+      const now = this.ctx.currentTime;
+      const target = Math.max(0.0001, value);
+      const gain = this.layers[name].gain.gain;
+      this.layers[name].target = target;
+      gain.cancelScheduledValues(now);
+      gain.setTargetAtTime(target, now, 0.35);
+    },
+    updateMusic(gameState, bomberCount) {
+      if (!this.ctx || !this.layers) return;
+      const active = gameState.running && !gameState.paused;
+      const lowHull = clamp((38 - gameState.hull) / 38, 0, 1);
+      const lowPlanet = clamp((45 - gameState.integrity) / 45, 0, 1);
+      this.setLayer("menu", active ? 0 : 0.16);
+      this.setLayer("combat", active ? clamp(0.08 + gameState.wave * 0.01, 0.08, 0.18) : 0);
+      this.setLayer("bomber", active ? clamp(bomberCount * 0.07, 0, 0.22) : 0);
+      this.setLayer("boss", active && gameState.wave > 0 && gameState.wave % 5 === 0 ? 0.18 : 0);
+      this.setLayer("danger", active ? Math.max(lowHull, lowPlanet) * 0.2 : 0);
     },
     laser() { this.tone({ freq: 900, slideTo: 240, type: "square", dur: 0.10, gain: 0.07 }); },
     explosion() { this.tone({ freq: 200, slideTo: 45, type: "sawtooth", dur: 0.28, gain: 0.14 }); },
@@ -1266,6 +1341,9 @@
         beginWave(state.wave + 1);
       }
     }
+
+    const bomberCount = invaderPool.active.reduce((count, inv) => count + (inv.userData.role === "bomber" ? 1 : 0), 0);
+    Sfx.updateMusic(state, bomberCount);
 
     // --- Particles (always) ---
     for (let i = particlePool.active.length - 1; i >= 0; i--) {
