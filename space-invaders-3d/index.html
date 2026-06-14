@@ -398,6 +398,110 @@
   scene.add(stars);
 
   // ---------------------------------------------------------------------------
+  // Optional deep-space landmarks
+  // ---------------------------------------------------------------------------
+  const environmentLandmarks = [];
+  const environmentHazards = [];
+  function trackLandmark(obj) { environmentLandmarks.push(obj); scene.add(obj); return obj; }
+  function trackHazard(obj, radius, damage, kind) {
+    obj.userData.radius = radius;
+    obj.userData.damage = damage;
+    obj.userData.kind = kind;
+    environmentHazards.push(obj);
+    return trackLandmark(obj);
+  }
+  function clearEnvironmentLandmarks() {
+    for (const obj of environmentLandmarks) scene.remove(obj);
+    environmentLandmarks.length = 0;
+    environmentHazards.length = 0;
+  }
+  function makeRadialSpriteTexture(stops) {
+    const cv = document.createElement("canvas"); cv.width = cv.height = 128;
+    const ctx = cv.getContext("2d");
+    const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+    for (const [p, c] of stops) g.addColorStop(p, c);
+    ctx.fillStyle = g; ctx.fillRect(0, 0, 128, 128);
+    return new THREE.CanvasTexture(cv);
+  }
+  const nebulaTexture = makeRadialSpriteTexture([[0, "rgba(125,249,255,0.45)"], [0.45, "rgba(126,72,255,0.22)"], [1, "rgba(0,0,0,0)"]]);
+  const mineTexture = makeRadialSpriteTexture([[0, "rgba(255,245,170,1)"], [0.25, "rgba(255,93,115,0.75)"], [1, "rgba(255,93,115,0)"]]);
+
+  function spawnNebulaClouds() {
+    const count = LOW_FX ? 5 : 9;
+    for (let i = 0; i < count; i++) {
+      const cloud = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: nebulaTexture, transparent: true, opacity: 0.28, depthWrite: false,
+        blending: THREE.AdditiveBlending, color: i % 2 ? 0x7df9ff : 0xb388ff,
+      }));
+      cloud.scale.set(90 + Math.random() * 90, 45 + Math.random() * 55, 1);
+      cloud.position.set((Math.random() - 0.5) * 260, -40 + Math.random() * 130, -180 - Math.random() * 140);
+      trackLandmark(cloud);
+    }
+  }
+
+  function spawnDerelictCapitalShipDebris() {
+    const hullMat = new THREE.MeshStandardMaterial({ color: 0x3d4656, metalness: 0.8, roughness: 0.55, emissive: 0x090d14 });
+    const scorchMat = new THREE.MeshStandardMaterial({ color: 0x1b1d24, metalness: 0.4, roughness: 0.9, flatShading: true });
+    const origin = new THREE.Vector3(95, 20, -120);
+    for (let i = 0; i < 7; i++) {
+      const g = new THREE.Group();
+      const core = new THREE.Mesh(new THREE.BoxGeometry(7 + Math.random() * 12, 2 + Math.random() * 4, 3 + Math.random() * 7), i % 3 ? hullMat : scorchMat);
+      core.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+      g.add(core);
+      const rib = new THREE.Mesh(new THREE.BoxGeometry(0.5, 7 + Math.random() * 8, 0.5), hullMat);
+      rib.position.x = (Math.random() - 0.5) * 9; rib.rotation.z = Math.random() * Math.PI; g.add(rib);
+      g.position.copy(origin).add(new THREE.Vector3((Math.random() - 0.5) * 55, (Math.random() - 0.5) * 24, (Math.random() - 0.5) * 55));
+      g.userData.spin = new THREE.Vector3((Math.random() - 0.5) * 0.12, (Math.random() - 0.5) * 0.12, (Math.random() - 0.5) * 0.12);
+      trackHazard(g, 5 + Math.random() * 7, 18, "DERELICT HULL");
+    }
+  }
+
+  function spawnMinefields() {
+    const mineMat = new THREE.MeshStandardMaterial({ color: 0x111725, emissive: 0xff2d3a, emissiveIntensity: 0.7, metalness: 0.5, roughness: 0.35 });
+    const spikeGeo = new THREE.ConeGeometry(0.18, 1.8, 6);
+    for (let i = 0; i < (LOW_FX ? 10 : 16); i++) {
+      const mine = new THREE.Group();
+      mine.add(new THREE.Mesh(new THREE.OctahedronGeometry(1.3, 0), mineMat));
+      for (let s = 0; s < 6; s++) {
+        const spike = new THREE.Mesh(spikeGeo, mineMat);
+        spike.rotation.z = (Math.PI / 3) * s; spike.position.set(Math.cos(spike.rotation.z) * 1.1, Math.sin(spike.rotation.z) * 1.1, 0);
+        mine.add(spike);
+      }
+      const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: mineTexture, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+      glow.scale.setScalar(7); mine.add(glow);
+      mine.position.set(-105 + Math.random() * 60, -12 + Math.random() * 55, -65 - Math.random() * 70);
+      mine.userData.spin = new THREE.Vector3(0, 0.8 + Math.random() * 0.8, 0);
+      trackHazard(mine, 3.2, 26, "MINEFIELD");
+    }
+  }
+
+  function spawnEnergyStormZones() {
+    const stormMat = new THREE.MeshBasicMaterial({ color: 0x7df9ff, transparent: true, opacity: 0.16, wireframe: true, blending: THREE.AdditiveBlending });
+    for (let i = 0; i < 3; i++) {
+      const radius = 17 + Math.random() * 10;
+      const storm = new THREE.Mesh(new THREE.IcosahedronGeometry(radius, 2), stormMat.clone());
+      storm.position.set(35 + Math.random() * 80, -35 + Math.random() * 70, -55 - Math.random() * 120);
+      storm.userData.spin = new THREE.Vector3(0.08, 0.18, 0.05);
+      trackHazard(storm, radius, 9, "ENERGY STORM");
+    }
+  }
+
+  function buildDefensePlatforms() {
+    const baseMat = new THREE.MeshStandardMaterial({ color: 0x73849a, metalness: 0.75, roughness: 0.42, emissive: 0x0b2030, emissiveIntensity: 0.8 });
+    const glowMat = new THREE.MeshBasicMaterial({ color: 0x7df9ff });
+    for (let i = 0; i < 5; i++) {
+      const platform = new THREE.Group();
+      platform.add(new THREE.Mesh(new THREE.CylinderGeometry(3, 3, 1.2, 8), baseMat));
+      const gun = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 7), baseMat); gun.position.z = -3.6; platform.add(gun);
+      const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.45, 10, 10), glowMat); beacon.position.y = 1; platform.add(beacon);
+      const ang = (i / 5) * Math.PI * 2;
+      platform.position.copy(planetGroup.position).add(new THREE.Vector3(Math.cos(ang) * PR * 2.1, (i - 2) * 12, Math.sin(ang) * PR * 2.1));
+      platform.lookAt(planetGroup.position);
+      trackHazard(platform, 5.5, 14, "DEFENSE PLATFORM");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Planet, clouds, atmosphere, moon, sun flare
   //   Textures load async; the start button unlocks when ready.
   // ---------------------------------------------------------------------------
@@ -731,6 +835,15 @@
     }
   }
 
+  function spawnEnvironmentLandmarks() {
+    clearEnvironmentLandmarks();
+    spawnNebulaClouds();
+    spawnDerelictCapitalShipDebris();
+    spawnMinefields();
+    spawnEnergyStormZones();
+    buildDefensePlatforms();
+  }
+
   // ---------------------------------------------------------------------------
   // Spawning helpers
   // ---------------------------------------------------------------------------
@@ -1056,6 +1169,7 @@
 
     invaderPool.releaseAll(); playerBullets.releaseAll(); enemyBullets.releaseAll(); particlePool.releaseAll();
     spawnAsteroidField();
+    spawnEnvironmentLandmarks();
     termLines.length = 0; term("SYSTEMS ONLINE"); term("DEFEND THE HOMEWORLD");
     beginWave(1); syncHud();
     ui.startScreen.classList.add("hidden"); ui.gameOverScreen.classList.add("hidden"); ui.pauseScreen.classList.add("hidden");
@@ -1216,6 +1330,11 @@
         if (!hit) for (const a of asteroids) {
           if (b.position.distanceToSquared(a.position) < (a.userData.radius + 0.4) ** 2) { spawnExplosion(b.position, 0x9a9a9a, 6); hit = true; break; }
         }
+        if (!hit) for (const h of environmentHazards) {
+          if (h.userData.kind !== "ENERGY STORM" && b.position.distanceToSquared(h.position) < (h.userData.radius + 0.4) ** 2) {
+            spawnExplosion(b.position, 0x7df9ff, 6); hit = true; break;
+          }
+        }
         if (hit || b.position.distanceToSquared(b.userData.from) > BULLET_RANGE * BULLET_RANGE) playerBullets.release(b);
       }
 
@@ -1243,6 +1362,23 @@
           shipVel.addScaledVector(tmpA, 14);
           spawnExplosion(shipPos, 0xffb86b, 8); Sfx.hit();
           damageHull(16 * dt * 60 * 0.02 + 8); if (!state.running) return;
+        }
+      }
+
+      // --- Environmental hazards (cheap sphere checks) ---
+      for (const h of environmentHazards) {
+        if (h.userData.spin) {
+          h.rotation.x += h.userData.spin.x * dt; h.rotation.y += h.userData.spin.y * dt; h.rotation.z += h.userData.spin.z * dt;
+        }
+        const rr = h.userData.radius + 1.4;
+        if (shipPos.distanceToSquared(h.position) < rr * rr) {
+          tmpA.copy(shipPos).sub(h.position).normalize();
+          if (tmpA.lengthSq() < 0.01) tmpA.set(0, 1, 0);
+          shipPos.copy(h.position).addScaledVector(tmpA, rr + 0.2);
+          shipVel.addScaledVector(tmpA, h.userData.kind === "ENERGY STORM" ? 8 : 18);
+          spawnExplosion(shipPos, h.userData.kind === "ENERGY STORM" ? 0x7df9ff : 0xff5d73, 8);
+          Sfx.hit(); term(h.userData.kind + " COLLISION");
+          damageHull(h.userData.damage); if (!state.running) return;
         }
       }
 
@@ -1339,6 +1475,7 @@
     };
     for (const inv of invaderPool.active) plot(inv.position, inv.userData.role === "bomber" ? "#ff8c1a" : "#ff3340");
     for (const a of asteroids) plot(a.position, "rgba(150,150,160,0.7)");
+    for (const h of environmentHazards) plot(h.position, h.userData.kind === "ENERGY STORM" ? "rgba(125,249,255,0.85)" : "rgba(255,93,115,0.75)");
 
     // Terminal: bearing of nearest hostile
     if (state.target && Math.random() < 0.01) {
