@@ -118,15 +118,29 @@
 
   /* Score popups + wave toast */
   #popups { position: fixed; inset: 0; pointer-events: none; z-index: 11; overflow: hidden; }
+  .popup, .warningMarker {
+    position: absolute; font-family: "Courier New", monospace; font-weight: bold;
+    transform: translate(-50%, -50%); will-change: transform, opacity;
+  }
   .popup {
-    position: absolute; font-family: "Courier New", monospace; font-weight: bold; font-size: 20px;
-    color: var(--amber); text-shadow: 0 0 10px rgba(255, 209, 102, 0.9);
-    transform: translate(-50%, -50%); animation: floatUp 0.9s ease-out forwards; will-change: transform, opacity;
+    font-size: 20px; color: var(--amber); text-shadow: 0 0 10px rgba(255, 209, 102, 0.9);
+    animation: floatUp 0.9s ease-out forwards;
+  }
+  .warningMarker {
+    font-size: 13px; letter-spacing: 2px; padding: 4px 8px; border: 1px solid currentColor; border-radius: 999px;
+    color: var(--red); background: rgba(20, 4, 10, 0.45); text-shadow: 0 0 8px currentColor;
+    box-shadow: 0 0 14px currentColor, inset 0 0 8px rgba(255,255,255,0.08);
+    animation: warnPulse 0.7s ease-out forwards;
   }
   @keyframes floatUp {
     0% { opacity: 0; transform: translate(-50%, -50%) scale(0.6); }
     20% { opacity: 1; transform: translate(-50%, -90%) scale(1.1); }
     100% { opacity: 0; transform: translate(-50%, -180%) scale(1); }
+  }
+  @keyframes warnPulse {
+    0% { opacity: 0; transform: translate(-50%, -50%) scale(0.75); }
+    25% { opacity: 1; transform: translate(-50%, -50%) scale(1.12); }
+    100% { opacity: 0; transform: translate(-50%, -50%) scale(1.35); }
   }
   #toast {
     position: fixed; left: 50%; top: 26%; transform: translate(-50%, -50%);
@@ -974,11 +988,34 @@
   const allyBulletGeo = new THREE.SphereGeometry(0.2, 8, 8);
   const allyBulletMat = new THREE.MeshBasicMaterial({ color: 0x7df9ff });
   const particleGeo = new THREE.SphereGeometry(0.18, 6, 6);
+  const tracerGeo = new THREE.BufferGeometry();
+  tracerGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(6), 3));
+  const shieldImpactTexture = makeRadialTexture("rgba(125,249,255,1)", "rgba(31,162,255,0)");
+  const VFX_COLORS = {
+    score: "#ffd166", danger: "#ff5d73", shield: "#7df9ff", hull: "#ffb86b", neutral: "#9a9a9a", enemy: "#ff2d3a", bomber: "#ff8c1a", player: "#9dffb0",
+  };
+
+  function makeRadialTexture(inner, outer) {
+    const c = document.createElement("canvas"); c.width = c.height = 64;
+    const ctx = c.getContext("2d");
+    const g = ctx.createRadialGradient(32, 32, 3, 32, 32, 32);
+    g.addColorStop(0, inner); g.addColorStop(0.35, inner); g.addColorStop(1, outer);
+    ctx.fillStyle = g; ctx.fillRect(0, 0, 64, 64);
+    return new THREE.CanvasTexture(c);
+  }
 
   const playerBullets = makePool(() => { const m = new THREE.Mesh(playerBulletGeo, playerBulletMat.clone()); scene.add(m); return m; });
   const enemyBullets = makePool(() => { const m = new THREE.Mesh(enemyBulletGeo, enemyBulletMat); scene.add(m); return m; });
   const allyBullets = makePool(() => { const m = new THREE.Mesh(allyBulletGeo, allyBulletMat); scene.add(m); return m; });
   const particlePool = makePool(() => { const m = new THREE.Mesh(particleGeo, new THREE.MeshBasicMaterial({ transparent: true })); scene.add(m); return m; });
+  const tracerPool = makePool(() => {
+    const l = new THREE.Line(tracerGeo.clone(), new THREE.LineBasicMaterial({ color: VFX_COLORS.player, transparent: true, opacity: 0.7 }));
+    scene.add(l); return l;
+  });
+  const shieldImpactPool = makePool(() => {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: shieldImpactTexture, color: 0x7df9ff, transparent: true, opacity: 0.9, depthWrite: false }));
+    scene.add(s); return s;
+  });
 
   const powerupGeo = new THREE.OctahedronGeometry(0.9, 0);
   const powerupCoreGeo = new THREE.SphereGeometry(0.34, 12, 12);
@@ -1083,6 +1120,7 @@
     b.userData.from = b.position.clone();
     b.userData.damage = weapon.damage;
     b.userData.range = weapon.range;
+    spawnTracer(b.position, tmpA.copy(b.position).addScaledVector(forward, 4), VFX_COLORS.player, 0.12);
   }
 
   function fireWeapon() {
@@ -1185,6 +1223,18 @@
       m.userData.life = 0.6;
     }
   }
+  function spawnTracer(from, to, color, life) {
+    const tr = tracerPool.acquire();
+    const attr = tr.geometry.attributes.position;
+    attr.setXYZ(0, from.x, from.y, from.z); attr.setXYZ(1, to.x, to.y, to.z); attr.needsUpdate = true;
+    tr.material.color.set(color || VFX_COLORS.player); tr.material.opacity = 0.75;
+    tr.userData.life = life || 0.16; tr.userData.maxLife = tr.userData.life;
+  }
+  function spawnShieldImpact(pos, color) {
+    const sp = shieldImpactPool.acquire();
+    sp.position.copy(pos); sp.material.color.set(color || VFX_COLORS.shield); sp.material.opacity = 0.9;
+    sp.scale.setScalar(3.2); sp.userData.life = 0.28; sp.userData.maxLife = 0.28;
+  }
 
   // ---------------------------------------------------------------------------
   // Audio (synth SFX)
@@ -1281,15 +1331,42 @@
   }
 
   const popupLayer = document.getElementById("popups");
+  function makeDomPool(className) {
+    return {
+      free: [], active: [],
+      acquire() {
+        const el = this.free.pop() || document.createElement("div");
+        el.className = className; el.style.display = "block";
+        popupLayer.appendChild(el); this.active.push(el); return el;
+      },
+      release(el) {
+        clearTimeout(el._poolTimer); el.style.display = "none"; el.textContent = ""; el.removeAttribute("style");
+        const i = this.active.indexOf(el); if (i >= 0) this.active.splice(i, 1);
+        if (el.parentNode) el.parentNode.removeChild(el); this.free.push(el);
+      },
+      releaseAll() { while (this.active.length) this.release(this.active[this.active.length - 1]); },
+    };
+  }
+  const scorePopupPool = makeDomPool("popup");
+  const warningMarkerPool = makeDomPool("warningMarker");
+
   function worldToScreen(v) {
     _proj.copy(v).project(camera);
     return { x: (_proj.x * 0.5 + 0.5) * window.innerWidth, y: (-_proj.y * 0.5 + 0.5) * window.innerHeight, visible: _proj.z < 1 };
   }
   function scorePopup(worldPos, text, color) {
     const s = worldToScreen(worldPos); if (!s.visible) return;
-    const el = document.createElement("div"); el.className = "popup"; el.textContent = text;
-    el.style.left = s.x + "px"; el.style.top = s.y + "px"; el.style.color = color || "#ffd166";
-    popupLayer.appendChild(el); setTimeout(() => el.remove(), 950);
+    const el = scorePopupPool.acquire(); el.textContent = text;
+    el.style.left = s.x + "px"; el.style.top = s.y + "px"; el.style.color = color || VFX_COLORS.score;
+    el.style.animation = "none"; void el.offsetWidth; el.style.animation = "floatUp 0.9s ease-out forwards";
+    el._poolTimer = setTimeout(() => scorePopupPool.release(el), 950);
+  }
+  function warningMarker(worldPos, text, color) {
+    const s = worldToScreen(worldPos); if (!s.visible) return;
+    const el = warningMarkerPool.acquire(); el.textContent = text || "WARNING";
+    el.style.left = s.x + "px"; el.style.top = s.y + "px"; el.style.color = color || VFX_COLORS.danger;
+    el.style.animation = "none"; void el.offsetWidth; el.style.animation = "warnPulse 0.7s ease-out forwards";
+    el._poolTimer = setTimeout(() => warningMarkerPool.release(el), 750);
   }
   const toastEl = document.getElementById("toast");
   let toastTimer = null;
@@ -1376,7 +1453,9 @@
     }
     state.waveDamageTaken = true;
     let a = amount;
-    if (state.shield > 0) { const s = Math.min(state.shield, a); state.shield -= s; a -= s; }
+    let shieldAbsorbed = 0;
+    if (state.shield > 0) { const s = Math.min(state.shield, a); state.shield -= s; a -= s; shieldAbsorbed = s; }
+    if (shieldAbsorbed > 0) spawnShieldImpact(shipPos, VFX_COLORS.shield);
     if (a > 0) state.hull -= a;
     state.waveTookDamage = true;
     state.invulnerableTimer = PLAYER_INVULN_DURATION;
@@ -1706,6 +1785,7 @@
     player.position.copy(shipPos); player.quaternion.copy(shipQuat);
 
     invaderPool.releaseAll(); playerBullets.releaseAll(); enemyBullets.releaseAll(); allyBullets.releaseAll(); particlePool.releaseAll(); powerupPool.releaseAll();
+    tracerPool.releaseAll(); shieldImpactPool.releaseAll(); scorePopupPool.releaseAll(); warningMarkerPool.releaseAll();
     resetAllies();
     for (const mark of damagedRegions) planetGroup.remove(mark);
     damagedRegions.length = 0;
@@ -1928,7 +2008,7 @@
           if (planetDist < PR * 1.8) bomberThreat = true;
           if (planetDist < PR + 6) {
             tmpB.copy(inv.position).sub(planetWorld).normalize().multiplyScalar(PR).add(planetWorld);
-            spawnExplosion(inv.position, 0xff8c1a, 26); invaderPool.release(inv);
+            spawnExplosion(inv.position, 0xff8c1a, 26); warningMarker(inv.position, "BREACH", VFX_COLORS.bomber); invaderPool.release(inv);
             if (state.target === inv) state.target = null;
             damagePlanet(9, tmpB); if (!state.running) return; continue;
           }
@@ -2096,7 +2176,7 @@
         }
         if (!enemyBullets.active.includes(b)) continue;
         if (b.position.distanceToSquared(shipPos) < 2.2 * 2.2) {
-          spawnExplosion(shipPos, 0xff5d73, 10); Sfx.playerHit(); enemyBullets.release(b);
+          spawnExplosion(shipPos, 0xff5d73, 10); warningMarker(shipPos, "HIT", VFX_COLORS.danger); Sfx.playerHit(); enemyBullets.release(b);
           term("INCOMING FIRE — SHIELD " + Math.round(state.shield) + "%");
           damageHull(12); if (!state.running) return; continue;
         }
@@ -2144,7 +2224,7 @@
           tmpA.copy(shipPos).sub(a.position).normalize();
           shipPos.copy(a.position).addScaledVector(tmpA, rr + 0.2);
           shipVel.addScaledVector(tmpA, 14);
-          spawnExplosion(shipPos, 0xffb86b, 8); Sfx.hit();
+          spawnExplosion(shipPos, 0xffb86b, 8); warningMarker(shipPos, "IMPACT", VFX_COLORS.hull); Sfx.hit();
           damageHull(16 * dt * 60 * 0.02 + 8); if (!state.running) return;
         }
       }
@@ -2201,12 +2281,26 @@
       }
     }
 
-    // --- Particles (always) ---
+    // --- VFX pools (always) ---
     for (let i = particlePool.active.length - 1; i >= 0; i--) {
       const p = particlePool.active[i];
       p.userData.life -= dt; p.position.addScaledVector(p.userData.vel, dt);
       p.material.opacity = Math.max(0, p.userData.life / 0.6);
       if (p.userData.life <= 0) particlePool.release(p);
+    }
+    for (let i = tracerPool.active.length - 1; i >= 0; i--) {
+      const tr = tracerPool.active[i];
+      tr.userData.life -= dt;
+      tr.material.opacity = Math.max(0, tr.userData.life / tr.userData.maxLife) * 0.75;
+      if (tr.userData.life <= 0) tracerPool.release(tr);
+    }
+    for (let i = shieldImpactPool.active.length - 1; i >= 0; i--) {
+      const sp = shieldImpactPool.active[i];
+      sp.userData.life -= dt;
+      const k = Math.max(0, sp.userData.life / sp.userData.maxLife);
+      sp.material.opacity = k * 0.9; sp.scale.setScalar(3.2 + (1 - k) * 4);
+      sp.quaternion.copy(camera.quaternion);
+      if (sp.userData.life <= 0) shieldImpactPool.release(sp);
     }
 
     // --- Camera ---
