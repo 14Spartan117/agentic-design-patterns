@@ -353,6 +353,7 @@
   const RADAR_RANGE = 280;
   const HISCORE_KEY = "starfall_defender_hiscore";
   const PROFILE_KEY = "starfall_defender_profile";
+  const PLAYER_INVULN_DURATION = 0.8;
 
   const TEX_BASE = "https://unpkg.com/three@0.160.0/examples/textures/planets/";
   const LOW_FX = window.matchMedia("(pointer: coarse)").matches ||
@@ -756,6 +757,11 @@
     flare.rotation.x = Math.PI / 2; flare.position.z = 1.55;
     group.add(flare);
     group.userData.flare = flare;
+    group.traverse((obj) => {
+      if (!obj.material) return;
+      obj.userData.baseOpacity = obj.material.opacity;
+      obj.userData.baseTransparent = obj.material.transparent;
+    });
     return group;
   }
   const player = makeShip();
@@ -908,7 +914,7 @@
     score: 0, wave: 1,
     hull: 100, shield: 100, integrity: 100,
     hiscore: Number(localStorage.getItem(HISCORE_KEY) || 0),
-    fireCooldown: 0, shieldRegenTimer: 0, shake: 0,
+    fireCooldown: 0, shieldRegenTimer: 0, invulnerableTimer: 0, shake: 0,
     cameraMode: "cockpit",
     target: null, lockTimer: 0,
     toSpawn: 0, spawnTimer: 0, spawnInterval: 1.3, invSpeed: 14, hunterRatio: 0.5,
@@ -987,10 +993,16 @@
   }
 
   function damageHull(amount) {
+    if (state.invulnerableTimer > 0) {
+      state.shake = Math.max(state.shake, 0.25);
+      return;
+    }
+
     let a = amount;
     if (state.shield > 0) { const s = Math.min(state.shield, a); state.shield -= s; a -= s; }
     if (a > 0) state.hull -= a;
     state.waveTookDamage = true;
+    state.invulnerableTimer = PLAYER_INVULN_DURATION;
     state.shieldRegenTimer = 4;
     state.shake = Math.max(state.shake, 1.0);
     syncHud();
@@ -1157,7 +1169,7 @@
     Sfx.init(); Sfx.resume();
     state.running = true; state.paused = false;
     state.score = 0; state.hull = 100; state.shield = 100; state.integrity = 100;
-    state.fireCooldown = 0; state.shieldRegenTimer = 0; state.shake = 0; state.target = null; state.waveTookDamage = false;
+    state.fireCooldown = 0; state.shieldRegenTimer = 0; state.invulnerableTimer = 0; state.shake = 0; state.target = null; state.waveTookDamage = false;
     controlAxes.throttle = 0.6;
     shipPos.set(0, 0, 60); shipVel.set(0, 0, 0);
     shipQuat.identity(); mouseAim.x = 0; mouseAim.y = 0;
@@ -1218,6 +1230,19 @@
     if (player.userData.flare) player.userData.flare.scale.y = 0.7 + Math.sin(t * 30) * 0.3 + (controlAxes.boost ? 0.8 : 0);
 
     if (state.running && !state.paused) {
+      if (state.invulnerableTimer > 0) state.invulnerableTimer = Math.max(0, state.invulnerableTimer - dt);
+
+      // Brief shield shimmer after taking real hull/shield damage. In chase view the
+      // ship flickers translucent; in cockpit view the reticle blooms cyan.
+      const invulnPulse = state.invulnerableTimer > 0 ? 0.5 + 0.5 * Math.sin(t * 70) : 0;
+      player.traverse((obj) => {
+        if (!obj.material || obj === player.userData.flare) return;
+        obj.material.transparent = state.invulnerableTimer > 0 || obj.userData.baseTransparent;
+        obj.material.opacity = state.invulnerableTimer > 0 ? 0.35 + invulnPulse * 0.45 : obj.userData.baseOpacity;
+      });
+      ui.reticle.style.filter = state.invulnerableTimer > 0 ? `drop-shadow(0 0 ${10 + invulnPulse * 16}px rgba(125,249,255,0.95))` : "";
+      cpLight.intensity = state.invulnerableTimer > 0 ? 1.2 + invulnPulse * 2.2 : 1.2;
+
       if (!IS_TOUCH) readKeyboard();   // touch writes controlAxes directly
 
       // --- Flight integration ---
