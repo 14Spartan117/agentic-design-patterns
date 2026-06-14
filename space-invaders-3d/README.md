@@ -1,8 +1,13 @@
-# 3D Space Invaders
+# Orbital Defender — 3D Planet Defense
 
-A browser-based 3D twist on the arcade classic, built with [Three.js](https://threejs.org/).
-You pilot a fighter at the front of the field and shoot down a descending swarm of
-invaders rendered in real 3D with lighting, a starfield, and explosion particles.
+A browser-based 3D action game built with [Three.js](https://threejs.org/).
+You pilot a fighter that **flies around a 3D planet** on great-circle orbits,
+climbing and diving to intercept waves of invaders that dive in from deep space.
+Every invader that reaches the surface damages the world — keep the planet's
+integrity above zero for as long as you can.
+
+Rendered in real 3D with a procedurally-textured planet, cloud layer, atmospheric
+glow, a full starfield, synthesized sound effects, and explosion particles.
 
 ## Play
 
@@ -45,25 +50,39 @@ Vercel prints the live URL when it finishes.
 
 | Action | Keys |
 | ------ | ---- |
-| Move left  | `←` or `A` |
-| Move right | `→` or `D` |
-| Fire       | `Space` |
+| Steer around the planet | `←` `→` or `A` `D` |
+| Climb / dive (and aim)  | `↑` `↓` or `W` `S` |
+| Fire                    | `Space` |
+
+On touch devices, on-screen pads appear automatically: steering on the left,
+climb/dive plus fire on the right.
 
 ## Gameplay
 
-- The swarm marches side to side, dropping closer each time it hits an edge.
-- Destroy every invader to clear a wave. Clearing a wave grants a bonus life.
-- Higher rows are worth more points; difficulty ramps each wave.
-- You start with 3 lives. Survive 5 waves to win.
-- It's game over if you run out of lives or the swarm reaches your line.
+- Your ship continuously flies forward along an orbit. Steer to circle the globe,
+  and climb/dive to change altitude and tilt your aim at incoming threats.
+- Invaders spawn out in space and descend straight toward the planet's surface.
+  Shoot them before they hit — the higher you intercept one, the more points it's worth.
+- A **red arrow** at the screen edge points to the nearest incoming invader, so
+  you always know which way to turn.
+- Each surface impact (or hit from an enemy shot) lowers **planet integrity**.
+  Clearing a wave repairs a little of it.
+- Waves get bigger and faster, and there's no win screen — it's an endless defense.
+  It's game over when planet integrity reaches zero.
 
 ## How it works
 
 Everything lives in `index.html`:
 
-- **Scene** — Three.js `WebGLRenderer`, a perspective camera looking down the field,
-  ambient + directional + point lighting, a `Fog`, a particle starfield, and a floor grid.
-- **Entities** — the player ship, invaders, bullets, and explosion particles are all
-  plain meshes tracked in arrays and updated each frame.
-- **Loop** — a fixed-ish `requestAnimationFrame` loop with delta-time movement handles
-  input, swarm AI, firing, collision detection (squared-distance checks), and HUD updates.
+- **Scene** — Three.js `WebGLRenderer`, a chase camera, sun + fill lighting, a
+  spherical starfield, and a planet built from canvas-generated textures (ocean,
+  continents, ice caps) with a rotating cloud layer and an additive atmosphere glow.
+- **Flight model** — the ship's position and heading live on an orbital sphere.
+  Steering rotates the heading around the local "up"; forward motion advances the
+  ship along a great circle; pitch changes altitude and the aim vector. This keeps
+  movement smooth all the way around the globe without gimbal-lock at the poles.
+- **Entities** — invaders, bullets, and explosion particles are plain meshes tracked
+  in arrays and updated each frame, with cheap squared-distance collision checks.
+- **Loop** — a delta-time `requestAnimationFrame` loop handles input, flight,
+  spawning, enemy AI, collisions, the projected HUD (crosshair, threat arrow,
+  score popups), and camera smoothing + shake.
