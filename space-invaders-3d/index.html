@@ -97,6 +97,7 @@
   #planetFill { background: linear-gradient(90deg, #b388ff, #7df9ff); box-shadow: 0 0 8px rgba(179,136,255,0.6); }
   #weaponFill { background: linear-gradient(90deg, #ffd166, #ffae42); box-shadow: 0 0 8px rgba(255,209,102,0.6); }
   #thrFill    { background: linear-gradient(90deg, #7df9ff, #39ff8c); box-shadow: 0 0 8px rgba(125,249,255,0.6); }
+  #boostFill  { background: linear-gradient(90deg, #ff5d73, #ffd166); box-shadow: 0 0 8px rgba(255,93,115,0.6); }
   @media (max-width: 560px) { #systems { width: 140px; padding: 7px 8px; } }
 
   /* Bottom-left green terminal feed */
@@ -263,6 +264,7 @@
     <div class="bar"><div class="lbl"><span>PLANET</span><span id="planetVal">100</span></div><div class="track"><div id="planetFill" class="fill"></div></div></div>
     <div class="bar"><div class="lbl"><span>WEAPON</span><span id="weaponVal">RDY</span></div><div class="track"><div id="weaponFill" class="fill"></div></div></div>
     <div class="bar"><div class="lbl"><span>THROTTLE</span><span id="thrVal2">60</span>%</div><div class="track"><div id="thrFill" class="fill"></div></div></div>
+    <div class="bar"><div class="lbl"><span>BOOST</span><span id="boostVal">100</span></div><div class="track"><div id="boostFill" class="fill"></div></div></div>
   </div>
 
   <div id="terminal" class="hud"></div>
@@ -346,6 +348,9 @@
   const WORLD_R = 230;              // play-space radius
   const BASE_SPEED = 36;            // top cruise speed
   const BOOST_MULT = 2.3;
+  const BOOST_DRAIN = 34;          // boost energy spent per second
+  const BOOST_REGEN = 22;          // boost energy recovered per second
+  const BOOST_RECOVER = 38;        // energy needed to clear overheat
   const PITCH_RATE = 1.7, YAW_RATE = 1.4, ROLL_RATE = 2.6;  // rad/s at full input
   const BULLET_SPEED = 170, BULLET_RANGE = 320, FIRE_CD = 0.13;
   const ENEMY_BULLET_SPEED = 75, ENEMY_BULLET_RANGE = 260;
@@ -915,6 +920,7 @@
     hull: 100, shield: 100, integrity: 100,
     hiscore: Number(localStorage.getItem(HISCORE_KEY) || 0),
     fireCooldown: 0, shieldRegenTimer: 0, invulnerableTimer: 0, shake: 0,
+    boostEnergy: 100, boostOverheated: false, boostActive: false,
     cameraMode: "cockpit",
     target: null, lockTimer: 0,
     toSpawn: 0, spawnTimer: 0, spawnInterval: 1.3, invSpeed: 14, hunterRatio: 0.5,
@@ -933,6 +939,7 @@
     planetVal: document.getElementById("planetVal"), planetFill: document.getElementById("planetFill"),
     weaponVal: document.getElementById("weaponVal"), weaponFill: document.getElementById("weaponFill"),
     thrFill: document.getElementById("thrFill"), thrVal2: document.getElementById("thrVal2"),
+    boostFill: document.getElementById("boostFill"), boostVal: document.getElementById("boostVal"),
     lockbox: document.getElementById("lockbox"), lockDist: document.querySelector("#lockbox .dist"),
     lead: document.getElementById("lead"), reticle: document.getElementById("aim"),
     radar: document.getElementById("radar"),
@@ -984,6 +991,10 @@
     ui.weaponFill.style.width = wpct + "%"; ui.weaponVal.textContent = state.fireCooldown <= 0 ? "RDY" : "...";
     const tpct = Math.round(controlAxes.throttle * 100);
     ui.thrFill.style.width = tpct + "%"; ui.thrVal2.textContent = tpct;
+    const bpct = Math.round(clamp(state.boostEnergy, 0, 100));
+    ui.boostFill.style.width = bpct + "%";
+    ui.boostVal.textContent = state.boostOverheated ? "HOT" : bpct;
+    barColor(ui.boostFill, bpct, "linear-gradient(90deg,#ff5d73,#ffd166)", "linear-gradient(90deg,#ffd166,#ffae42)");
   }
 
   function addScore(points, atPos, color) {
@@ -1170,6 +1181,7 @@
     state.running = true; state.paused = false;
     state.score = 0; state.hull = 100; state.shield = 100; state.integrity = 100;
     state.fireCooldown = 0; state.shieldRegenTimer = 0; state.invulnerableTimer = 0; state.shake = 0; state.target = null; state.waveTookDamage = false;
+    state.boostEnergy = 100; state.boostOverheated = false; state.boostActive = false; state._wasBoost = false;
     controlAxes.throttle = 0.6;
     shipPos.set(0, 0, 60); shipVel.set(0, 0, 0);
     shipQuat.identity(); mouseAim.x = 0; mouseAim.y = 0;
@@ -1227,7 +1239,7 @@
       s.position.set(Math.cos(a) * s.userData.rad, s.userData.y, Math.sin(a) * s.userData.rad);
       s.rotation.y = -a;
     }
-    if (player.userData.flare) player.userData.flare.scale.y = 0.7 + Math.sin(t * 30) * 0.3 + (controlAxes.boost ? 0.8 : 0);
+    if (player.userData.flare) player.userData.flare.scale.y = 0.7 + Math.sin(t * 30) * 0.3 + (state.boostActive ? 0.8 : 0);
 
     if (state.running && !state.paused) {
       if (state.invulnerableTimer > 0) state.invulnerableTimer = Math.max(0, state.invulnerableTimer - dt);
@@ -1258,7 +1270,17 @@
       rightV.set(1, 0, 0).applyQuaternion(shipQuat);
       upV.set(0, 1, 0).applyQuaternion(shipQuat);
 
-      const targetSpeed = BASE_SPEED * controlAxes.throttle * (controlAxes.boost ? BOOST_MULT : 1);
+      if (state.boostOverheated && state.boostEnergy >= BOOST_RECOVER) state.boostOverheated = false;
+      const wantsBoost = controlAxes.boost && !state.boostOverheated && state.boostEnergy > 0;
+      if (wantsBoost) {
+        state.boostEnergy = Math.max(0, state.boostEnergy - BOOST_DRAIN * dt);
+        if (state.boostEnergy <= 0) state.boostOverheated = true;
+      } else {
+        state.boostEnergy = Math.min(100, state.boostEnergy + BOOST_REGEN * dt);
+      }
+      state.boostActive = wantsBoost && !state.boostOverheated;
+
+      const targetSpeed = BASE_SPEED * controlAxes.throttle * (state.boostActive ? BOOST_MULT : 1);
       tmpA.copy(forward).multiplyScalar(targetSpeed);
       shipVel.lerp(tmpA, 1 - Math.pow(0.1, dt));
       shipPos.addScaledVector(shipVel, dt);
@@ -1274,8 +1296,8 @@
       player.position.copy(shipPos); player.quaternion.copy(shipQuat);
 
       // Boost SFX (gated)
-      if (controlAxes.boost && !state._wasBoost) Sfx.boost();
-      state._wasBoost = controlAxes.boost;
+      if (state.boostActive && !state._wasBoost) Sfx.boost();
+      state._wasBoost = state.boostActive;
 
       // --- Firing ---
       state.fireCooldown -= dt;
@@ -1430,7 +1452,7 @@
     }
 
     // --- Camera ---
-    const fovTarget = controlAxes.boost && state.running ? FOV_BOOST : FOV_BASE;
+    const fovTarget = state.boostActive && state.running ? FOV_BOOST : FOV_BASE;
     camera.fov = lerp(camera.fov, fovTarget, 1 - Math.pow(0.01, dt));
     camera.updateProjectionMatrix();
 
