@@ -2,11 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 <title>3D Space Invaders</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; background: #05060f; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #05060f; touch-action: none; }
   #app { position: fixed; inset: 0; }
   canvas { display: block; }
 
@@ -16,6 +16,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 12px;
     padding: 16px 24px;
     font-family: "Courier New", monospace;
     color: #7df9ff;
@@ -26,8 +27,29 @@
     user-select: none;
     z-index: 10;
   }
-  #hud .stat { display: flex; gap: 8px; align-items: center; }
+  #hud .stat { display: flex; gap: 8px; align-items: center; white-space: nowrap; }
+  #hud #hiscore { color: #ffd166; text-shadow: 0 0 8px rgba(255, 209, 102, 0.7); }
   #lives { color: #ff5d73; text-shadow: 0 0 8px rgba(255, 93, 115, 0.8); }
+  @media (max-width: 560px) { #hud { font-size: 14px; padding: 12px 14px; } }
+
+  /* Floating score popups projected from 3D space */
+  #popups { position: fixed; inset: 0; pointer-events: none; z-index: 11; overflow: hidden; }
+  .popup {
+    position: absolute;
+    font-family: "Courier New", monospace;
+    font-weight: bold;
+    font-size: 22px;
+    color: #ffd166;
+    text-shadow: 0 0 10px rgba(255, 209, 102, 0.9);
+    transform: translate(-50%, -50%);
+    animation: floatUp 0.9s ease-out forwards;
+    will-change: transform, opacity;
+  }
+  @keyframes floatUp {
+    0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.6); }
+    20%  { opacity: 1; transform: translate(-50%, -90%) scale(1.1); }
+    100% { opacity: 0; transform: translate(-50%, -180%) scale(1); }
+  }
 
   .overlay {
     position: fixed;
@@ -51,10 +73,7 @@
     color: #7df9ff;
     text-shadow: 0 0 18px rgba(125, 249, 255, 0.9);
   }
-  .overlay h2 {
-    font-size: clamp(22px, 4vw, 38px);
-    letter-spacing: 3px;
-  }
+  .overlay h2 { font-size: clamp(22px, 4vw, 38px); letter-spacing: 3px; }
   .overlay p { font-size: 16px; line-height: 1.9; color: #9fb3c8; max-width: 520px; }
   .overlay .key {
     display: inline-block;
@@ -81,6 +100,37 @@
   }
   .overlay button:hover { transform: scale(1.05); box-shadow: 0 0 36px rgba(125, 249, 255, 0.9); }
   #finalScore { color: #ffd166; }
+  #newHi { color: #39ff8c; text-shadow: 0 0 12px rgba(57, 255, 140, 0.8); }
+  #newHi.hidden { display: none; }
+
+  /* On-screen touch controls (shown on touch / coarse-pointer devices) */
+  #touch {
+    position: fixed;
+    inset: auto 0 0 0;
+    display: none;
+    justify-content: space-between;
+    align-items: flex-end;
+    padding: 0 24px 28px;
+    z-index: 15;
+    pointer-events: none;
+  }
+  #touch .pad { display: flex; gap: 16px; pointer-events: auto; }
+  #touch button {
+    width: 78px; height: 78px;
+    border-radius: 50%;
+    border: 2px solid rgba(125, 249, 255, 0.5);
+    background: rgba(125, 249, 255, 0.10);
+    color: #7df9ff;
+    font-family: "Courier New", monospace;
+    font-size: 30px;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+  }
+  #touch button:active { background: rgba(125, 249, 255, 0.3); }
+  #touch #fireBtn { border-color: rgba(255, 93, 115, 0.6); color: #ff5d73; background: rgba(255, 93, 115, 0.12); }
+  @media (pointer: coarse) { #touch { display: flex; } }
+  body.show-touch #touch { display: flex; }
 </style>
 </head>
 <body>
@@ -88,8 +138,21 @@
 
   <div id="hud">
     <div class="stat">SCORE <span id="score">0</span></div>
+    <div class="stat" id="hiscore">HI <span id="hiscoreVal">0</span></div>
     <div class="stat">WAVE <span id="wave">1</span></div>
     <div class="stat" id="lives">LIVES <span id="livesCount">3</span></div>
+  </div>
+
+  <div id="popups"></div>
+
+  <div id="touch">
+    <div class="pad">
+      <button id="leftBtn" aria-label="Move left">&larr;</button>
+      <button id="rightBtn" aria-label="Move right">&rarr;</button>
+    </div>
+    <div class="pad">
+      <button id="fireBtn" aria-label="Fire">&#x25B2;</button>
+    </div>
   </div>
 
   <div id="startScreen" class="overlay">
@@ -97,7 +160,8 @@
     <p>
       Defend the galaxy. Blast the descending swarm before it reaches you.<br /><br />
       <span class="key">&larr;</span> <span class="key">&rarr;</span> or <span class="key">A</span> <span class="key">D</span> to move<br />
-      <span class="key">SPACE</span> to fire
+      <span class="key">SPACE</span> to fire &nbsp;&middot;&nbsp; on mobile, use the on-screen pads<br /><br />
+      Take out the <span style="color:#ff2d55">UFO</span> for bonus points. Hide behind the shields!
     </p>
     <button id="startBtn">START</button>
   </div>
@@ -105,6 +169,7 @@
   <div id="gameOverScreen" class="overlay hidden">
     <h1 id="gameOverTitle">GAME OVER</h1>
     <h2>SCORE <span id="finalScore">0</span></h2>
+    <h2 id="newHi" class="hidden">NEW HIGH SCORE!</h2>
     <p id="gameOverMsg"></p>
     <button id="restartBtn">PLAY AGAIN</button>
   </div>
@@ -135,6 +200,9 @@
   const ENEMY_BULLET_SPEED = 20;
   const PLAYER_FIRE_COOLDOWN = 0.26;
   const LOSE_LINE_Z = PLAYER_Z + 1; // invaders reaching here end the game
+  const SHIELD_Z = PLAYER_Z - 6;    // barriers sit in front of the player
+  const UFO_Z = INVADER_START_Z - 4;
+  const HISCORE_KEY = "si3d_hiscore";
 
   // ---------------------------------------------------------------------------
   // Renderer / scene / camera
@@ -150,12 +218,10 @@
   scene.fog = new THREE.Fog(0x05060f, 36, 78);
 
   const camera = new THREE.PerspectiveCamera(
-    60,
-    window.innerWidth / window.innerHeight,
-    0.1,
-    220
+    60, window.innerWidth / window.innerHeight, 0.1, 220
   );
-  camera.position.set(0, 17, 32);
+  const CAMERA_BASE = new THREE.Vector3(0, 17, 32);
+  camera.position.copy(CAMERA_BASE);
   camera.lookAt(0, 0, -4);
 
   // ---------------------------------------------------------------------------
@@ -183,11 +249,7 @@
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     const mat = new THREE.PointsMaterial({
-      color: 0x9fb3ff,
-      size: 0.45,
-      transparent: true,
-      opacity: 0.9,
-      sizeAttenuation: true,
+      color: 0x9fb3ff, size: 0.45, transparent: true, opacity: 0.9, sizeAttenuation: true,
     });
     return new THREE.Points(geo, mat);
   }
@@ -197,6 +259,41 @@
   const grid = new THREE.GridHelper(140, 70, 0x1d3b66, 0x12233f);
   grid.position.y = -3;
   scene.add(grid);
+
+  // ---------------------------------------------------------------------------
+  // Audio — tiny synthesized SFX via the Web Audio API (no asset files)
+  // ---------------------------------------------------------------------------
+  const Sfx = {
+    ctx: null,
+    init() {
+      if (this.ctx) return;
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) this.ctx = new AC();
+    },
+    resume() { if (this.ctx && this.ctx.state === "suspended") this.ctx.resume(); },
+    tone({ freq = 440, type = "square", dur = 0.12, gain = 0.18, slideTo = null }) {
+      if (!this.ctx) return;
+      const t = this.ctx.currentTime;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, t);
+      if (slideTo) osc.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+      g.gain.setValueAtTime(gain, t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      osc.connect(g).connect(this.ctx.destination);
+      osc.start(t);
+      osc.stop(t + dur);
+    },
+    shoot()    { this.tone({ freq: 880, slideTo: 220, type: "square",   dur: 0.12, gain: 0.10 }); },
+    explosion(){ this.tone({ freq: 180, slideTo: 40,  type: "sawtooth", dur: 0.30, gain: 0.16 }); },
+    playerHit(){ this.tone({ freq: 120, slideTo: 30,  type: "sawtooth", dur: 0.50, gain: 0.22 }); },
+    ufoHit()   { this.tone({ freq: 1200, slideTo: 300, type: "triangle", dur: 0.35, gain: 0.18 }); },
+    waveClear(){
+      this.tone({ freq: 523, type: "triangle", dur: 0.12, gain: 0.14 });
+      setTimeout(() => this.tone({ freq: 784, type: "triangle", dur: 0.18, gain: 0.14 }), 120);
+    },
+  };
 
   // ---------------------------------------------------------------------------
   // Player ship
@@ -224,7 +321,6 @@
     glow.position.set(0, 0.3, -0.4);
     group.add(glow);
 
-    // engine flare
     const flare = new THREE.Mesh(
       new THREE.ConeGeometry(0.35, 1.2, 8),
       new THREE.MeshBasicMaterial({ color: 0xffae42, transparent: true, opacity: 0.85 })
@@ -233,7 +329,6 @@
     flare.position.z = 1.6;
     group.add(flare);
     group.userData.flare = flare;
-
     return group;
   }
   const player = makePlayer();
@@ -241,7 +336,7 @@
   scene.add(player);
 
   // ---------------------------------------------------------------------------
-  // Invader factory
+  // Invader + UFO factories
   // ---------------------------------------------------------------------------
   const invaderGeo = new THREE.IcosahedronGeometry(0.95, 0);
   function makeInvader(color) {
@@ -263,13 +358,32 @@
     return group;
   }
 
+  function makeUfo() {
+    const group = new THREE.Group();
+    const disc = new THREE.Mesh(
+      new THREE.SphereGeometry(1.6, 18, 10),
+      new THREE.MeshStandardMaterial({ color: 0xff2d55, emissive: 0x5a0010, metalness: 0.6, roughness: 0.3 })
+    );
+    disc.scale.set(1, 0.42, 1);
+    group.add(disc);
+    const dome = new THREE.Mesh(
+      new THREE.SphereGeometry(0.8, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2),
+      new THREE.MeshStandardMaterial({ color: 0xffe066, emissive: 0x7a6000, metalness: 0.4, roughness: 0.3, transparent: true, opacity: 0.85 })
+    );
+    dome.position.y = 0.25;
+    group.add(dome);
+    return group;
+  }
+
   // ---------------------------------------------------------------------------
-  // Object pools (bullets) and live entity lists
+  // Live entity lists
   // ---------------------------------------------------------------------------
   let invaders = [];
   let playerBullets = [];
   let enemyBullets = [];
   let particles = [];
+  let shields = [];
+  let ufo = null;
 
   const playerBulletGeo = new THREE.CylinderGeometry(0.14, 0.14, 1.6, 8);
   const playerBulletMat = new THREE.MeshBasicMaterial({ color: 0x7dff9c });
@@ -294,6 +408,52 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Shields — clusters of small destructible blocks
+  // ---------------------------------------------------------------------------
+  const shieldBlockGeo = new THREE.BoxGeometry(0.7, 0.7, 0.7);
+  function spawnShields() {
+    clearList(shields);
+    const clusters = 4;
+    const spread = BOUND_X * 1.4;
+    for (let c = 0; c < clusters; c++) {
+      const cx = -spread / 2 + (spread / (clusters - 1)) * c;
+      for (let bx = -1; bx <= 1; bx++) {
+        for (let bz = -1; bz <= 0; bz++) {
+          const mat = new THREE.MeshStandardMaterial({
+            color: 0x39ff8c, emissive: 0x0c3322, metalness: 0.2, roughness: 0.6,
+          });
+          const block = new THREE.Mesh(shieldBlockGeo, mat);
+          block.position.set(cx + bx * 0.75, 0, SHIELD_Z + bz * 0.75);
+          block.userData.hp = 3;
+          scene.add(block);
+          shields.push(block);
+        }
+      }
+    }
+  }
+
+  // Damage a shield block; returns true if a block absorbed the hit.
+  function hitShield(bullet) {
+    for (let i = shields.length - 1; i >= 0; i--) {
+      const s = shields[i];
+      if (hitTest(bullet, s, 0.85)) {
+        s.userData.hp -= 1;
+        if (s.userData.hp <= 0) {
+          spawnExplosion(s.position, 0x39ff8c);
+          scene.remove(s);
+          shields.splice(i, 1);
+        } else {
+          // visibly degrade
+          s.material.color.offsetHSL(0, -0.15, -0.12);
+          s.scale.multiplyScalar(0.82);
+        }
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // ---------------------------------------------------------------------------
   // Explosion particles
   // ---------------------------------------------------------------------------
   const particleGeo = new THREE.SphereGeometry(0.18, 6, 6);
@@ -302,14 +462,31 @@
       const m = new THREE.Mesh(particleGeo, new THREE.MeshBasicMaterial({ color, transparent: true }));
       m.position.copy(pos);
       m.userData.vel = new THREE.Vector3(
-        (Math.random() - 0.5) * 16,
-        (Math.random() - 0.5) * 16,
-        (Math.random() - 0.5) * 16
+        (Math.random() - 0.5) * 16, (Math.random() - 0.5) * 16, (Math.random() - 0.5) * 16
       );
       m.userData.life = 0.6;
       scene.add(m);
       particles.push(m);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Floating score popups (project a 3D point to screen space)
+  // ---------------------------------------------------------------------------
+  const popupLayer = document.getElementById("popups");
+  const _proj = new THREE.Vector3();
+  function scorePopup(worldPos, text, color = "#ffd166") {
+    _proj.copy(worldPos).project(camera);
+    const x = (_proj.x * 0.5 + 0.5) * window.innerWidth;
+    const y = (-_proj.y * 0.5 + 0.5) * window.innerHeight;
+    const el = document.createElement("div");
+    el.className = "popup";
+    el.textContent = text;
+    el.style.left = x + "px";
+    el.style.top = y + "px";
+    el.style.color = color;
+    popupLayer.appendChild(el);
+    setTimeout(() => el.remove(), 950);
   }
 
   // ---------------------------------------------------------------------------
@@ -320,16 +497,20 @@
     score: 0,
     wave: 1,
     lives: 3,
-    swarmDir: 1,          // +1 right, -1 left
-    swarmSpeed: 3.2,      // sideways units/sec
-    descendStep: 1.4,     // how far the swarm steps toward player on edge hit
+    hiscore: Number(localStorage.getItem(HISCORE_KEY) || 0),
+    swarmDir: 1,
+    swarmSpeed: 3.2,
+    descendStep: 1.4,
     enemyFireTimer: 0,
     enemyFireInterval: 1.4,
     fireCooldown: 0,
+    shake: 0,
+    ufoTimer: 0,
   };
 
   const ui = {
     score: document.getElementById("score"),
+    hiscore: document.getElementById("hiscoreVal"),
     wave: document.getElementById("wave"),
     lives: document.getElementById("livesCount"),
     startScreen: document.getElementById("startScreen"),
@@ -337,12 +518,20 @@
     finalScore: document.getElementById("finalScore"),
     gameOverTitle: document.getElementById("gameOverTitle"),
     gameOverMsg: document.getElementById("gameOverMsg"),
+    newHi: document.getElementById("newHi"),
   };
 
   function syncHud() {
     ui.score.textContent = state.score;
+    ui.hiscore.textContent = state.hiscore;
     ui.wave.textContent = state.wave;
     ui.lives.textContent = state.lives;
+  }
+
+  function addScore(points, atPos) {
+    state.score += points;
+    if (state.score > state.hiscore) state.hiscore = state.score;
+    if (atPos) scorePopup(atPos, "+" + points);
   }
 
   // ---------------------------------------------------------------------------
@@ -362,9 +551,7 @@
       for (let c = 0; c < INVADER_COLS; c++) {
         const inv = makeInvader(ROW_COLORS[r % ROW_COLORS.length]);
         inv.position.set(
-          c * INVADER_SPACING_X - offsetX,
-          0,
-          INVADER_START_Z + r * INVADER_SPACING_Z
+          c * INVADER_SPACING_X - offsetX, 0, INVADER_START_Z + r * INVADER_SPACING_Z
         );
         inv.userData.points = (INVADER_ROWS - r) * 10;
         inv.userData.phase = Math.random() * Math.PI * 2;
@@ -377,7 +564,25 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Input
+  // UFO spawning / handling
+  // ---------------------------------------------------------------------------
+  function scheduleUfo() { state.ufoTimer = 9 + Math.random() * 9; }
+
+  function spawnUfo() {
+    ufo = makeUfo();
+    const dir = Math.random() < 0.5 ? 1 : -1;
+    ufo.position.set(dir === 1 ? -BOUND_X - 6 : BOUND_X + 6, 3.5, UFO_Z);
+    ufo.userData.dir = dir;
+    ufo.userData.points = [50, 100, 150, 200][Math.floor(Math.random() * 4)];
+    scene.add(ufo);
+  }
+
+  function removeUfo() {
+    if (ufo) { scene.remove(ufo); ufo = null; }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Input — keyboard + on-screen touch buttons
   // ---------------------------------------------------------------------------
   const keys = { left: false, right: false, fire: false };
   window.addEventListener("keydown", (e) => {
@@ -391,10 +596,26 @@
     if (e.code === "Space") keys.fire = false;
   });
 
+  function bindHold(id, key) {
+    const el = document.getElementById(id);
+    const on = (e) => { keys[key] = true; e.preventDefault(); };
+    const off = (e) => { keys[key] = false; e.preventDefault(); };
+    el.addEventListener("pointerdown", on);
+    el.addEventListener("pointerup", off);
+    el.addEventListener("pointerleave", off);
+    el.addEventListener("pointercancel", off);
+  }
+  bindHold("leftBtn", "left");
+  bindHold("rightBtn", "right");
+  bindHold("fireBtn", "fire");
+  // Reveal touch controls the first time a touch occurs (covers hybrid devices)
+  window.addEventListener("touchstart", () => document.body.classList.add("show-touch"), { once: true });
+
   // ---------------------------------------------------------------------------
   // Game flow
   // ---------------------------------------------------------------------------
   function startGame() {
+    Sfx.init(); Sfx.resume();
     state.running = true;
     state.score = 0;
     state.wave = 1;
@@ -402,11 +623,15 @@
     state.swarmDir = 1;
     state.fireCooldown = 0;
     state.enemyFireTimer = 0;
+    state.shake = 0;
     player.position.set(0, 0, PLAYER_Z);
     clearList(playerBullets);
     clearList(enemyBullets);
     clearList(particles);
+    removeUfo();
+    scheduleUfo();
     spawnWave();
+    spawnShields();
     syncHud();
     ui.startScreen.classList.add("hidden");
     ui.gameOverScreen.classList.add("hidden");
@@ -414,11 +639,16 @@
 
   function endGame(won) {
     state.running = false;
+    const isNewHi = state.score >= state.hiscore && state.score > 0;
+    if (state.score > Number(localStorage.getItem(HISCORE_KEY) || 0)) {
+      localStorage.setItem(HISCORE_KEY, String(state.score));
+    }
     ui.finalScore.textContent = state.score;
     ui.gameOverTitle.textContent = won ? "YOU WIN!" : "GAME OVER";
     ui.gameOverMsg.textContent = won
       ? "You cleared the swarm. The galaxy is safe... for now."
       : "The swarm overwhelmed your defenses.";
+    ui.newHi.classList.toggle("hidden", !isNewHi);
     ui.gameOverScreen.classList.remove("hidden");
   }
 
@@ -426,7 +656,7 @@
   document.getElementById("restartBtn").addEventListener("click", startGame);
 
   // ---------------------------------------------------------------------------
-  // Collision helper (cheap distance check)
+  // Collision helper (cheap squared-distance check)
   // ---------------------------------------------------------------------------
   function hitTest(a, b, radius) {
     return a.position.distanceToSquared(b.position) < radius * radius;
@@ -436,9 +666,21 @@
   // Update loop
   // ---------------------------------------------------------------------------
   function update(dt, t) {
-    // Animated background regardless of running state
     stars.rotation.z += dt * 0.01;
     player.userData.flare.scale.y = 0.7 + Math.sin(t * 30) * 0.3;
+
+    // Camera shake (decays over time), applied around the base position
+    if (state.shake > 0) {
+      state.shake = Math.max(0, state.shake - dt * 2.2);
+      const s = state.shake;
+      camera.position.set(
+        CAMERA_BASE.x + (Math.random() - 0.5) * s,
+        CAMERA_BASE.y + (Math.random() - 0.5) * s,
+        CAMERA_BASE.z + (Math.random() - 0.5) * s
+      );
+    } else {
+      camera.position.copy(CAMERA_BASE);
+    }
 
     if (!state.running) return;
 
@@ -447,19 +689,18 @@
     if (keys.right) player.position.x += PLAYER_SPEED * dt;
     player.position.x = THREE.MathUtils.clamp(player.position.x, -BOUND_X, BOUND_X);
     player.rotation.z = THREE.MathUtils.lerp(
-      player.rotation.z,
-      (keys.left ? 0.35 : 0) - (keys.right ? 0.35 : 0),
-      0.2
+      player.rotation.z, (keys.left ? 0.35 : 0) - (keys.right ? 0.35 : 0), 0.2
     );
 
     // --- Player firing ---
     state.fireCooldown -= dt;
     if (keys.fire && state.fireCooldown <= 0) {
       spawnPlayerBullet();
+      Sfx.shoot();
       state.fireCooldown = PLAYER_FIRE_COOLDOWN;
     }
 
-    // --- Swarm movement (move sideways, step toward player at edges) ---
+    // --- Swarm movement ---
     let minX = Infinity, maxX = -Infinity, maxZ = -Infinity;
     for (const inv of invaders) {
       inv.position.x += state.swarmDir * state.swarmSpeed * dt;
@@ -474,9 +715,9 @@
       state.swarmDir *= -1;
       for (const inv of invaders) inv.position.z += state.descendStep;
     }
-    if (maxZ >= LOSE_LINE_Z) { endGame(false); return; }
+    if (maxZ >= LOSE_LINE_Z) { Sfx.playerHit(); endGame(false); return; }
 
-    // --- Enemy firing (random front-line invader shoots) ---
+    // --- Enemy firing ---
     state.enemyFireTimer -= dt;
     if (state.enemyFireTimer <= 0 && invaders.length) {
       const shooter = invaders[Math.floor(Math.random() * invaders.length)];
@@ -484,22 +725,56 @@
       state.enemyFireTimer = state.enemyFireInterval * (0.6 + Math.random() * 0.8);
     }
 
+    // --- UFO lifecycle ---
+    if (!ufo) {
+      state.ufoTimer -= dt;
+      if (state.ufoTimer <= 0) spawnUfo();
+    } else {
+      ufo.position.x += ufo.userData.dir * 10 * dt;
+      ufo.rotation.y += dt * 2;
+      if (ufo.userData.dir === 1 ? ufo.position.x > BOUND_X + 6 : ufo.position.x < -BOUND_X - 6) {
+        removeUfo();
+        scheduleUfo();
+      }
+    }
+
     // --- Player bullets ---
     for (let i = playerBullets.length - 1; i >= 0; i--) {
       const b = playerBullets[i];
       b.position.z -= PLAYER_BULLET_SPEED * dt;
       let consumed = false;
-      for (let j = invaders.length - 1; j >= 0; j--) {
-        const inv = invaders[j];
-        if (hitTest(b, inv, 1.25)) {
-          spawnExplosion(inv.position, inv.userData.core.material.color.getHex());
-          state.score += inv.userData.points;
-          scene.remove(inv);
-          invaders.splice(j, 1);
-          consumed = true;
-          break;
+
+      // UFO hit
+      if (ufo && hitTest(b, ufo, 1.7)) {
+        spawnExplosion(ufo.position, 0xff2d55);
+        addScore(ufo.userData.points);
+        scorePopup(ufo.position, "+" + ufo.userData.points, "#ff2d55");
+        Sfx.ufoHit();
+        state.shake = Math.max(state.shake, 1.0);
+        removeUfo();
+        scheduleUfo();
+        consumed = true;
+      }
+
+      // Invader hits
+      if (!consumed) {
+        for (let j = invaders.length - 1; j >= 0; j--) {
+          const inv = invaders[j];
+          if (hitTest(b, inv, 1.25)) {
+            spawnExplosion(inv.position, inv.userData.core.material.color.getHex());
+            addScore(inv.userData.points, inv.position);
+            Sfx.explosion();
+            scene.remove(inv);
+            invaders.splice(j, 1);
+            consumed = true;
+            break;
+          }
         }
       }
+
+      // Shield hit (player shots also chip the shields)
+      if (!consumed && hitShield(b)) consumed = true;
+
       if (consumed || b.position.z < INVADER_START_Z - 12) {
         scene.remove(b);
         playerBullets.splice(i, 1);
@@ -510,8 +785,17 @@
     for (let i = enemyBullets.length - 1; i >= 0; i--) {
       const b = enemyBullets[i];
       b.position.z += ENEMY_BULLET_SPEED * dt;
+
+      if (hitShield(b)) {
+        scene.remove(b);
+        enemyBullets.splice(i, 1);
+        continue;
+      }
+
       if (hitTest(b, player, 1.3)) {
         spawnExplosion(player.position, 0xff5d73);
+        Sfx.playerHit();
+        state.shake = Math.max(state.shake, 1.4);
         scene.remove(b);
         enemyBullets.splice(i, 1);
         state.lives -= 1;
@@ -541,11 +825,13 @@
 
     // --- Wave cleared ---
     if (invaders.length === 0) {
+      Sfx.waveClear();
       if (state.wave >= 5) { endGame(true); return; }
       state.wave += 1;
       state.lives = Math.min(state.lives + 1, 5); // bonus life
       clearList(enemyBullets);
       spawnWave();
+      spawnShields();   // fresh barriers each wave
       syncHud();
     }
   }
@@ -560,6 +846,7 @@
     update(dt, clock.elapsedTime);
     renderer.render(scene, camera);
   }
+  syncHud();
   animate();
 
   // ---------------------------------------------------------------------------
