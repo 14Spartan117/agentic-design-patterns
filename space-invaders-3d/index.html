@@ -97,6 +97,7 @@
   #planetFill { background: linear-gradient(90deg, #b388ff, #7df9ff); box-shadow: 0 0 8px rgba(179,136,255,0.6); }
   #weaponFill { background: linear-gradient(90deg, #ffd166, #ffae42); box-shadow: 0 0 8px rgba(255,209,102,0.6); }
   #thrFill    { background: linear-gradient(90deg, #7df9ff, #39ff8c); box-shadow: 0 0 8px rgba(125,249,255,0.6); }
+  #boostFill  { background: linear-gradient(90deg, #ff5d73, #ffd166); box-shadow: 0 0 8px rgba(255,93,115,0.6); }
   @media (max-width: 560px) { #systems { width: 140px; padding: 7px 8px; } }
 
   /* Bottom-left green terminal feed */
@@ -263,6 +264,7 @@
     <div class="bar"><div class="lbl"><span>PLANET</span><span id="planetVal">100</span></div><div class="track"><div id="planetFill" class="fill"></div></div></div>
     <div class="bar"><div class="lbl"><span>WEAPON</span><span id="weaponVal">RDY</span></div><div class="track"><div id="weaponFill" class="fill"></div></div></div>
     <div class="bar"><div class="lbl"><span>THROTTLE</span><span id="thrVal2">60</span>%</div><div class="track"><div id="thrFill" class="fill"></div></div></div>
+    <div class="bar"><div class="lbl"><span>BOOST</span><span id="boostVal">100</span></div><div class="track"><div id="boostFill" class="fill"></div></div></div>
   </div>
 
   <div id="terminal" class="hud"></div>
@@ -286,7 +288,10 @@
         <button id="rollRBtn" aria-label="Roll right">&#x21BB;</button>
         <button id="viewBtnT" aria-label="Toggle view">VIEW</button>
       </div>
-      <button id="fireBtnT" aria-label="Fire">&#x25C9;</button>
+      <div class="col">
+        <button id="weaponBtnT" aria-label="Cycle weapon">WPN</button>
+        <button id="fireBtnT" aria-label="Fire">&#x25C9;</button>
+      </div>
     </div>
   </div>
 
@@ -298,8 +303,8 @@
       their bombers reach the homeworld. Lock targets, lead your shots, and watch your hull.<br /><br />
       <span class="key">W</span><span class="key">S</span> pitch &nbsp; <span class="key">A</span><span class="key">D</span> yaw &nbsp; <span class="key">Q</span><span class="key">E</span> roll<br />
       <span class="key">Mouse</span> aim &nbsp; <span class="key">R</span><span class="key">F</span> or wheel throttle &nbsp; <span class="key">Shift</span> boost<br />
-      <span class="key">Space</span> / click fire &nbsp; <span class="key">C</span> toggle cockpit / chase<br /><br />
-      On mobile: left stick steers, right buttons fire / boost / roll / view.
+      <span class="key">Space</span> / click fire &nbsp; <span class="key">V</span> cycle weapon &nbsp; <span class="key">C</span> toggle cockpit / chase<br /><br />
+      On mobile: left stick steers, right buttons fire / boost / roll / view / weapon.
     </p>
     <section id="profilePanel" class="panel" aria-label="Persistent commander profile">
       <h3>COMMANDER PROFILE</h3>
@@ -346,13 +351,26 @@
   const WORLD_R = 230;              // play-space radius
   const BASE_SPEED = 36;            // top cruise speed
   const BOOST_MULT = 2.3;
+  const BOOST_DRAIN = 34;          // boost energy spent per second
+  const BOOST_REGEN = 22;          // boost energy recovered per second
+  const BOOST_RECOVER = 38;        // energy needed to clear overheat
   const PITCH_RATE = 1.7, YAW_RATE = 1.4, ROLL_RATE = 2.6;  // rad/s at full input
-  const BULLET_SPEED = 170, BULLET_RANGE = 320, FIRE_CD = 0.13;
+  const BULLET_SPEED = 170, BULLET_RANGE = 320;
+  const PLAYER_BULLET_DAMAGE = 1;   // fallback damage when a projectile has none
+  const WEAPON_ORDER = ["laser", "spread", "missile", "charge"];
+  const WEAPONS = {
+    laser:  { name: "LASER",  cooldown: 0.13, speed: BULLET_SPEED, damage: 1, color: 0x9dffb0, size: 1.0, pellets: 1, range: BULLET_RANGE },
+    spread: { name: "SPREAD", cooldown: 0.34, speed: 145,          damage: 1, color: 0xffd166, size: 0.82, pellets: 5, spread: 0.105, range: 250 },
+    missile:{ name: "MISSILE",cooldown: 0.62, speed: 115,          damage: 3, color: 0xff8c1a, size: 1.45, pellets: 1, range: 360 },
+    charge: { name: "CHARGE", cooldown: 0.95, speed: 190,          damage: 5, color: 0x7df9ff, size: 2.0, pellets: 1, range: 420 },
+  };
+  const FIRE_CD = WEAPONS.laser.cooldown;
   const ENEMY_BULLET_SPEED = 75, ENEMY_BULLET_RANGE = 260;
   const FOV_BASE = 70, FOV_BOOST = 84;
   const RADAR_RANGE = 280;
   const HISCORE_KEY = "starfall_defender_hiscore";
   const PROFILE_KEY = "starfall_defender_profile";
+  const PLAYER_INVULN_DURATION = 0.8;
 
   const TEX_BASE = "https://unpkg.com/three@0.160.0/examples/textures/planets/";
   const LOW_FX = window.matchMedia("(pointer: coarse)").matches ||
@@ -756,6 +774,11 @@
     flare.rotation.x = Math.PI / 2; flare.position.z = 1.55;
     group.add(flare);
     group.userData.flare = flare;
+    group.traverse((obj) => {
+      if (!obj.material) return;
+      obj.userData.baseOpacity = obj.material.opacity;
+      obj.userData.baseTransparent = obj.material.transparent;
+    });
     return group;
   }
   const player = makeShip();
@@ -780,13 +803,23 @@
   const enemyBulletMat = new THREE.MeshBasicMaterial({ color: 0xff5d73 });
   const particleGeo = new THREE.SphereGeometry(0.18, 6, 6);
 
-  const playerBullets = makePool(() => { const m = new THREE.Mesh(playerBulletGeo, playerBulletMat); scene.add(m); return m; });
+  const playerBullets = makePool(() => { const m = new THREE.Mesh(playerBulletGeo, playerBulletMat.clone()); scene.add(m); return m; });
   const enemyBullets = makePool(() => { const m = new THREE.Mesh(enemyBulletGeo, enemyBulletMat); scene.add(m); return m; });
   const particlePool = makePool(() => { const m = new THREE.Mesh(particleGeo, new THREE.MeshBasicMaterial({ transparent: true })); scene.add(m); return m; });
 
   const invaderGeo = new THREE.IcosahedronGeometry(1.0, 0);
   const invaderRingGeo = new THREE.TorusGeometry(1.15, 0.16, 8, 20);
   const invaderEyeGeo = new THREE.SphereGeometry(0.26, 12, 12);
+  const INVADER_ROLES = {
+    drifter: { hp: 1, color: 0xff2d3a },
+    hunter: { hp: 2, color: 0xff2d3a },
+    bomber: { hp: 3, color: 0xff8c1a },
+    elite: { hp: 6, color: 0xb388ff },
+    miniboss: { hp: 10, color: 0x7df9ff },
+  };
+  const INVADER_HIT_FLASH_TIME = 0.08;
+  const INVADER_BASE_EMISSIVE_INTENSITY = 1.4;
+  const INVADER_FLASH_EMISSIVE_INTENSITY = 3.0;
   function makeInvaderMesh() {
     const group = new THREE.Group();
     const core = new THREE.Mesh(invaderGeo, new THREE.MeshStandardMaterial({
@@ -834,12 +867,43 @@
   // ---------------------------------------------------------------------------
   // Spawning helpers
   // ---------------------------------------------------------------------------
-  function spawnPlayerBullet() {
+  function spawnWeaponProjectile(weapon, dir, lateralOffset = 0) {
     const b = playerBullets.acquire();
-    b.position.copy(player.position).addScaledVector(forward, 1.6);
-    b.quaternion.copy(shipQuat); b.rotateX(Math.PI / 2);
-    b.userData.vel = forward.clone().multiplyScalar(BULLET_SPEED).addScaledVector(shipVel, 0.5);
+    b.position.copy(player.position).addScaledVector(forward, 1.6).addScaledVector(rightV, lateralOffset);
+    b.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+    b.material.color.setHex(weapon.color);
+    b.scale.setScalar(weapon.size);
+    b.userData.vel = dir.clone().multiplyScalar(weapon.speed).addScaledVector(shipVel, 0.5);
     b.userData.from = b.position.clone();
+    b.userData.damage = weapon.damage;
+    b.userData.range = weapon.range;
+  }
+
+  function fireWeapon() {
+    const weapon = WEAPONS[state.weaponType] || WEAPONS.laser;
+    const count = weapon.pellets || 1;
+    const spread = weapon.spread || 0;
+    for (let i = 0; i < count; i++) {
+      const mid = (count - 1) / 2;
+      const yaw = (i - mid) * spread;
+      const pitch = count > 1 && i % 2 ? spread * 0.35 : 0;
+      const dir = forward.clone().applyAxisAngle(upV, yaw).applyAxisAngle(rightV, pitch).normalize();
+      spawnWeaponProjectile(weapon, dir, (i - mid) * 0.18);
+    }
+    Sfx.laser();
+    state.fireCooldown = weapon.cooldown;
+  }
+
+  function cycleWeapon(step = 1) {
+    const idx = WEAPON_ORDER.indexOf(state.weaponType);
+    state.weaponType = WEAPON_ORDER[(idx + step + WEAPON_ORDER.length) % WEAPON_ORDER.length];
+    state.fireCooldown = Math.min(state.fireCooldown, getActiveWeapon().cooldown);
+    term("WEAPON SELECT — " + getActiveWeapon().name);
+    syncHud();
+  }
+
+  function getActiveWeapon() {
+    return WEAPONS[state.weaponType] || WEAPONS.laser;
   }
   function spawnEnemyBullet(inv) {
     const b = enemyBullets.acquire();
@@ -908,7 +972,8 @@
     score: 0, wave: 1,
     hull: 100, shield: 100, integrity: 100,
     hiscore: Number(localStorage.getItem(HISCORE_KEY) || 0),
-    fireCooldown: 0, shieldRegenTimer: 0, shake: 0,
+    fireCooldown: 0, weaponType: "laser", shieldRegenTimer: 0, invulnerableTimer: 0, shake: 0,
+    boostEnergy: 100, boostOverheated: false, boostActive: false,
     cameraMode: "cockpit",
     target: null, lockTimer: 0,
     toSpawn: 0, spawnTimer: 0, spawnInterval: 1.3, invSpeed: 14, hunterRatio: 0.5,
@@ -927,6 +992,7 @@
     planetVal: document.getElementById("planetVal"), planetFill: document.getElementById("planetFill"),
     weaponVal: document.getElementById("weaponVal"), weaponFill: document.getElementById("weaponFill"),
     thrFill: document.getElementById("thrFill"), thrVal2: document.getElementById("thrVal2"),
+    boostFill: document.getElementById("boostFill"), boostVal: document.getElementById("boostVal"),
     lockbox: document.getElementById("lockbox"), lockDist: document.querySelector("#lockbox .dist"),
     lead: document.getElementById("lead"), reticle: document.getElementById("aim"),
     radar: document.getElementById("radar"),
@@ -974,10 +1040,15 @@
     ui.planetVal.textContent = Math.round(state.integrity); ui.planetFill.style.width = clamp(state.integrity, 0, 100) + "%";
     barColor(ui.hullFill, state.hull, "linear-gradient(90deg,#39ff8c,#7df9ff)", "linear-gradient(90deg,#ffd166,#ffae42)");
     barColor(ui.planetFill, state.integrity, "linear-gradient(90deg,#b388ff,#7df9ff)", "linear-gradient(90deg,#ffd166,#ffae42)");
-    const wpct = clamp((1 - state.fireCooldown / FIRE_CD) * 100, 0, 100);
-    ui.weaponFill.style.width = wpct + "%"; ui.weaponVal.textContent = state.fireCooldown <= 0 ? "RDY" : "...";
+    const activeWeapon = getActiveWeapon();
+    const wpct = clamp((1 - state.fireCooldown / activeWeapon.cooldown) * 100, 0, 100);
+    ui.weaponFill.style.width = wpct + "%"; ui.weaponVal.textContent = activeWeapon.name + " " + (state.fireCooldown <= 0 ? "RDY" : "...");
     const tpct = Math.round(controlAxes.throttle * 100);
     ui.thrFill.style.width = tpct + "%"; ui.thrVal2.textContent = tpct;
+    const bpct = Math.round(clamp(state.boostEnergy, 0, 100));
+    ui.boostFill.style.width = bpct + "%";
+    ui.boostVal.textContent = state.boostOverheated ? "HOT" : bpct;
+    barColor(ui.boostFill, bpct, "linear-gradient(90deg,#ff5d73,#ffd166)", "linear-gradient(90deg,#ffd166,#ffae42)");
   }
 
   function addScore(points, atPos, color) {
@@ -987,10 +1058,16 @@
   }
 
   function damageHull(amount) {
+    if (state.invulnerableTimer > 0) {
+      state.shake = Math.max(state.shake, 0.25);
+      return;
+    }
+
     let a = amount;
     if (state.shield > 0) { const s = Math.min(state.shield, a); state.shield -= s; a -= s; }
     if (a > 0) state.hull -= a;
     state.waveTookDamage = true;
+    state.invulnerableTimer = PLAYER_INVULN_DURATION;
     state.shieldRegenTimer = 4;
     state.shake = Math.max(state.shake, 1.0);
     syncHud();
@@ -1034,16 +1111,29 @@
     inv.userData.vel = new THREE.Vector3();
     inv.userData.speed = state.invSpeed * (0.85 + Math.random() * 0.4);
     inv.userData.fireTimer = 1 + Math.random() * 2;
-    inv.userData.hp = 1;
     const r = Math.random();
     const spawnBoss = state.wave > 0 && state.wave % 5 === 0 && !state.bossSpawned;
     inv.userData.role = spawnBoss ? "boss" : r < state.hunterRatio ? "hunter" : r < state.hunterRatio + 0.25 ? "bomber" : "drifter";
-    if (spawnBoss) { state.bossSpawned = true; inv.userData.hp = 5 + Math.floor(state.wave / 5); }
+    if (spawnBoss) state.bossSpawned = true;
+    const roleConfig = INVADER_ROLES[inv.userData.role] || INVADER_ROLES.drifter;
+    // boss keeps its dynamic HP / purple; other roles use the role table
+    inv.userData.hp = spawnBoss ? (5 + Math.floor(state.wave / 5)) : roleConfig.hp;
+    inv.userData.maxHp = inv.userData.hp;
+    inv.userData.baseColor = spawnBoss ? 0xb388ff : roleConfig.color;
+    inv.userData.hitFlashTimer = 0;
+    // per-invader AI state (richer behaviors)
+    inv.userData.phase = "approach";
+    inv.userData.strafeDir = Math.random() < 0.5 ? -1 : 1;
+    inv.userData.boostTimer = 1.6 + Math.random() * 2.4;
+    inv.userData.warningTimer = 0.2 + Math.random() * 1.2;
+    inv.userData.ignoreTimer = 0;
+    inv.userData.orbitTarget = null;
     inv.userData.spin = (Math.random() - 0.5) * 2;
-    inv.scale.setScalar(inv.userData.role === "boss" ? 2.4 : 1);
-    if (inv.userData.role === "bomber") inv.userData.core.material.color.set(0xff8c1a), inv.userData.core.material.emissive.set(0xff8c1a);
-    else if (inv.userData.role === "boss") inv.userData.core.material.color.set(0xb388ff), inv.userData.core.material.emissive.set(0xb388ff);
-    else inv.userData.core.material.color.set(0xff2d3a), inv.userData.core.material.emissive.set(0xff2d3a);
+    inv.scale.setScalar(spawnBoss ? 2.4 : 1);
+    inv.userData.core.material.color.set(inv.userData.baseColor);
+    inv.userData.core.material.emissive.set(inv.userData.baseColor);
+    inv.userData.core.material.emissiveIntensity = INVADER_BASE_EMISSIVE_INTENSITY;
+    inv.userData.ring.material.emissive.set(0x330008);
   }
 
   // ---------------------------------------------------------------------------
@@ -1054,6 +1144,7 @@
     keys[e.code] = true;
     if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) e.preventDefault();
     if (e.code === "KeyC") toggleView();
+    if (e.code === "KeyV" && !e.repeat) cycleWeapon(1);
     if (e.code === "KeyZ" || e.code === "KeyF") controlAxes.throttle = clamp(controlAxes.throttle - 0.1, 0, 1);
     if (e.code === "KeyX" || e.code === "KeyR") controlAxes.throttle = clamp(controlAxes.throttle + 0.1, 0, 1);
   });
@@ -1139,6 +1230,7 @@
     tap("thrUpBtn", () => controlAxes.throttle = clamp(controlAxes.throttle + 0.15, 0, 1));
     tap("thrDownBtn", () => controlAxes.throttle = clamp(controlAxes.throttle - 0.15, 0, 1));
     tap("viewBtnT", () => toggleView());
+    tap("weaponBtnT", () => cycleWeapon(1));
   }
   setupTouch();
   window.addEventListener("touchstart", () => document.body.classList.add("show-touch"), { once: true });
@@ -1157,7 +1249,8 @@
     Sfx.init(); Sfx.resume();
     state.running = true; state.paused = false;
     state.score = 0; state.hull = 100; state.shield = 100; state.integrity = 100;
-    state.fireCooldown = 0; state.shieldRegenTimer = 0; state.shake = 0; state.target = null; state.waveTookDamage = false;
+    state.fireCooldown = 0; state.weaponType = "laser"; state.shieldRegenTimer = 0; state.invulnerableTimer = 0; state.shake = 0; state.target = null; state.waveTookDamage = false;
+    state.boostEnergy = 100; state.boostOverheated = false; state.boostActive = false; state._wasBoost = false;
     controlAxes.throttle = 0.6;
     shipPos.set(0, 0, 60); shipVel.set(0, 0, 0);
     shipQuat.identity(); mouseAim.x = 0; mouseAim.y = 0;
@@ -1215,9 +1308,22 @@
       s.position.set(Math.cos(a) * s.userData.rad, s.userData.y, Math.sin(a) * s.userData.rad);
       s.rotation.y = -a;
     }
-    if (player.userData.flare) player.userData.flare.scale.y = 0.7 + Math.sin(t * 30) * 0.3 + (controlAxes.boost ? 0.8 : 0);
+    if (player.userData.flare) player.userData.flare.scale.y = 0.7 + Math.sin(t * 30) * 0.3 + (state.boostActive ? 0.8 : 0);
 
     if (state.running && !state.paused) {
+      if (state.invulnerableTimer > 0) state.invulnerableTimer = Math.max(0, state.invulnerableTimer - dt);
+
+      // Brief shield shimmer after taking real hull/shield damage. In chase view the
+      // ship flickers translucent; in cockpit view the reticle blooms cyan.
+      const invulnPulse = state.invulnerableTimer > 0 ? 0.5 + 0.5 * Math.sin(t * 70) : 0;
+      player.traverse((obj) => {
+        if (!obj.material || obj === player.userData.flare) return;
+        obj.material.transparent = state.invulnerableTimer > 0 || obj.userData.baseTransparent;
+        obj.material.opacity = state.invulnerableTimer > 0 ? 0.35 + invulnPulse * 0.45 : obj.userData.baseOpacity;
+      });
+      ui.reticle.style.filter = state.invulnerableTimer > 0 ? `drop-shadow(0 0 ${10 + invulnPulse * 16}px rgba(125,249,255,0.95))` : "";
+      cpLight.intensity = state.invulnerableTimer > 0 ? 1.2 + invulnPulse * 2.2 : 1.2;
+
       if (!IS_TOUCH) readKeyboard();   // touch writes controlAxes directly
 
       // --- Flight integration ---
@@ -1233,7 +1339,17 @@
       rightV.set(1, 0, 0).applyQuaternion(shipQuat);
       upV.set(0, 1, 0).applyQuaternion(shipQuat);
 
-      const targetSpeed = BASE_SPEED * controlAxes.throttle * (controlAxes.boost ? BOOST_MULT : 1);
+      if (state.boostOverheated && state.boostEnergy >= BOOST_RECOVER) state.boostOverheated = false;
+      const wantsBoost = controlAxes.boost && !state.boostOverheated && state.boostEnergy > 0;
+      if (wantsBoost) {
+        state.boostEnergy = Math.max(0, state.boostEnergy - BOOST_DRAIN * dt);
+        if (state.boostEnergy <= 0) state.boostOverheated = true;
+      } else {
+        state.boostEnergy = Math.min(100, state.boostEnergy + BOOST_REGEN * dt);
+      }
+      state.boostActive = wantsBoost && !state.boostOverheated;
+
+      const targetSpeed = BASE_SPEED * controlAxes.throttle * (state.boostActive ? BOOST_MULT : 1);
       tmpA.copy(forward).multiplyScalar(targetSpeed);
       shipVel.lerp(tmpA, 1 - Math.pow(0.1, dt));
       shipPos.addScaledVector(shipVel, dt);
@@ -1249,12 +1365,12 @@
       player.position.copy(shipPos); player.quaternion.copy(shipQuat);
 
       // Boost SFX (gated)
-      if (controlAxes.boost && !state._wasBoost) Sfx.boost();
-      state._wasBoost = controlAxes.boost;
+      if (state.boostActive && !state._wasBoost) Sfx.boost();
+      state._wasBoost = state.boostActive;
 
       // --- Firing ---
       state.fireCooldown -= dt;
-      if (controlAxes.fire && state.fireCooldown <= 0) { spawnPlayerBullet(); Sfx.laser(); state.fireCooldown = FIRE_CD; }
+      if (controlAxes.fire && state.fireCooldown <= 0) fireWeapon();
 
       // --- Shield regen ---
       if (state.shieldRegenTimer > 0) state.shieldRegenTimer -= dt;
@@ -1269,9 +1385,42 @@
       for (let i = invaderPool.active.length - 1; i >= 0; i--) {
         const inv = invaderPool.active[i];
         const ud = inv.userData;
+        if (ud.hitFlashTimer > 0) {
+          ud.hitFlashTimer = Math.max(0, ud.hitFlashTimer - dt);
+          if (ud.hitFlashTimer === 0) {
+            ud.core.material.color.set(ud.baseColor);
+            ud.core.material.emissive.set(ud.baseColor);
+            ud.core.material.emissiveIntensity = INVADER_BASE_EMISSIVE_INTENSITY;
+          }
+        }
         let desired;
         if (ud.role === "bomber") {
           desired = tmpA.copy(planetWorld).sub(inv.position).normalize();
+          ud.boostTimer -= dt;
+          ud.warningTimer -= dt;
+          if (ud.boostTimer <= 0) {
+            ud.phase = "dive";
+            ud.boostTimer = 2.8 + Math.random() * 2.6;
+            ud.warningTimer = 0;
+          }
+          if (ud.phase === "dive") {
+            desired.multiplyScalar(2.45);
+            inv.userData.ring.material.emissive.set(0xff5d00);
+            if (ud.warningTimer <= 0) {
+              term("BOMBER DIVE DETECTED");
+              ud.warningTimer = 1.2;
+            }
+            for (let k = 0; k < 2; k++) {
+              const m = particlePool.acquire();
+              m.material.color.set(0xff8c1a); m.material.opacity = 0.8;
+              m.position.copy(inv.position).add(new THREE.Vector3((Math.random() - 0.5) * 1.4, (Math.random() - 0.5) * 1.4, (Math.random() - 0.5) * 1.4));
+              m.userData.vel = desired.clone().multiplyScalar(-7).add(new THREE.Vector3((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 4, (Math.random() - 0.5) * 4));
+              m.userData.life = 0.6;
+            }
+            if (ud.boostTimer < 1.3) ud.phase = "approach";
+          } else {
+            inv.userData.ring.material.emissive.set(0x330008);
+          }
           // reached the planet?
           if (inv.position.distanceTo(planetWorld) < PR + 6) {
             spawnExplosion(inv.position, 0xff8c1a, 18); invaderPool.release(inv);
@@ -1279,18 +1428,57 @@
             damagePlanet(9); if (!state.running) return; continue;
           }
         } else if (ud.role === "hunter" || ud.role === "boss") {
-          desired = tmpA.copy(shipPos).sub(inv.position);
-          const d = desired.length(); desired.normalize();
-          // keep a strafing distance
-          if (d < 35) desired.multiplyScalar(-1);
+          const toShip = tmpA.copy(shipPos).sub(inv.position);
+          const d = toShip.length();
+          const chase = toShip.normalize();
+          const strafe = tmpB.crossVectors(chase, upV).normalize().multiplyScalar(ud.strafeDir);
+          if (d < 30) desired = chase.multiplyScalar(-1.1).addScaledVector(strafe, 0.9).normalize();
+          else if (d > 62) desired = chase.multiplyScalar(0.8).addScaledVector(strafe, 0.85).normalize();
+          else desired = strafe.addScaledVector(chase, Math.sin(t * 1.7 + ud.spin) * 0.18).normalize();
+          ud.warningTimer -= dt;
+          if (ud.warningTimer <= 0 && d < 75) {
+            term("HUNTER STRAFE VECTOR LOCK");
+            ud.warningTimer = 4 + Math.random() * 3;
+          }
+          if (Math.random() < dt * 0.2) ud.strafeDir *= -1;
         } else {
-          // drifter: wander slowly, but steer back toward the fight if it strays
-          // out of engagement range, so an unshot drifter can never stall a wave
-          if (inv.position.distanceTo(shipPos) > 170) {
-            desired = tmpA.copy(shipPos).sub(inv.position).normalize();
+          const shipDist = inv.position.distanceTo(shipPos);
+          ud.warningTimer -= dt;
+          if (ud.phase === "mine") {
+            desired = tmpA.set(0, 0, 0);
+            inv.scale.setScalar(1.25 + Math.sin(t * 8) * 0.08);
+            inv.userData.ring.rotation.y += dt * 5;
+            if (ud.warningTimer <= 0 && shipDist < 90) {
+              term("DRIFTER MINE ARMED");
+              ud.warningTimer = 3.5;
+            }
+          } else if (shipDist < 38) {
+            ud.phase = "flee";
+            desired = tmpA.copy(inv.position).sub(shipPos).normalize();
+            if (ud.warningTimer <= 0) { term("DRIFTER FLEE PATTERN"); ud.warningTimer = 4; }
           } else {
-            desired = tmpA.copy(ud.vel).normalize();
-            if (desired.lengthSq() < 0.01) desired.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
+            ud.ignoreTimer += dt;
+            if (ud.ignoreTimer > 11 && shipDist > 85) {
+              ud.phase = "mine";
+              ud.speed = 0;
+              ud.core.material.color.set(0x9b5dff); ud.core.material.emissive.set(0x9b5dff);
+              term("DRIFTER MINE TRANSFORM");
+              desired = tmpA.set(0, 0, 0);
+            } else {
+              if (!ud.orbitTarget || Math.random() < dt * 0.12) {
+                ud.orbitTarget = asteroids.length ? asteroids[Math.floor(Math.random() * asteroids.length)] : null;
+              }
+              if (ud.orbitTarget) {
+                const toAsteroid = tmpA.copy(ud.orbitTarget.position).sub(inv.position);
+                const tangent = tmpB.crossVectors(toAsteroid, upV).normalize().multiplyScalar(ud.strafeDir);
+                desired = toAsteroid.normalize().multiplyScalar(0.45).add(tangent).normalize();
+                ud.phase = "orbit";
+                if (ud.warningTimer <= 0) { term("DRIFTER ASTEROID ORBIT"); ud.warningTimer = 5 + Math.random() * 4; }
+              } else {
+                desired = tmpA.copy(ud.vel).normalize();
+                if (desired.lengthSq() < 0.01) desired.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
+              }
+            }
           }
         }
         ud.vel.lerp(desired.multiplyScalar(ud.speed), 1 - Math.pow(0.2, dt));
@@ -1314,14 +1502,19 @@
         let hit = false;
         for (let j = invaderPool.active.length - 1; j >= 0; j--) {
           const inv = invaderPool.active[j];
-          const hitRadius = inv.userData.role === "boss" ? 5.2 : 2.2;
+          const role = inv.userData.role;
+          const hitRadius = role === "boss" ? 5.2 : 2.2;
           if (b.position.distanceToSquared(inv.position) < hitRadius * hitRadius) {
-            const role = inv.userData.role;
-            inv.userData.hp = (inv.userData.hp || 1) - 1;
-            spawnExplosion(inv.position, inv.userData.core.material.color.getHex(), role === "boss" ? 22 : 16);
-            Sfx.explosion();
+            inv.userData.hp -= (b.userData.damage || PLAYER_BULLET_DAMAGE);
+            // brief white hit-flash
+            inv.userData.hitFlashTimer = INVADER_HIT_FLASH_TIME;
+            inv.userData.core.material.color.set(0xffffff);
+            inv.userData.core.material.emissive.set(0xffffff);
+            inv.userData.core.material.emissiveIntensity = INVADER_FLASH_EMISSIVE_INTENSITY;
             hit = true;
             if (inv.userData.hp <= 0) {
+              spawnExplosion(inv.position, inv.userData.baseColor, role === "boss" ? 22 : 16);
+              Sfx.explosion();
               const points = role === "bomber" ? 75 : role === "boss" ? 300 : role === "hunter" ? 50 : 30;
               addScore(points, inv.position, "#ffd166");
               profile.totalKills++;
@@ -1331,7 +1524,8 @@
               if (state.target === inv) state.target = null;
               invaderPool.release(inv);
             } else {
-              scorePopup(inv.position, "ARMOR " + inv.userData.hp, "#b388ff");
+              spawnExplosion(inv.position, inv.userData.baseColor, 5); Sfx.hit();
+              if (inv.userData.maxHp > 1) scorePopup(inv.position, "ARMOR " + inv.userData.hp, "#b388ff");
             }
             break;
           }
@@ -1339,7 +1533,7 @@
         if (!hit) for (const a of asteroids) {
           if (b.position.distanceToSquared(a.position) < (a.userData.radius + 0.4) ** 2) { spawnExplosion(b.position, 0x9a9a9a, 6); hit = true; break; }
         }
-        if (hit || b.position.distanceToSquared(b.userData.from) > BULLET_RANGE * BULLET_RANGE) playerBullets.release(b);
+        if (hit || b.position.distanceToSquared(b.userData.from) > (b.userData.range || BULLET_RANGE) ** 2) playerBullets.release(b);
       }
 
       // --- Enemy bullets ---
@@ -1373,9 +1567,11 @@
       for (let j = invaderPool.active.length - 1; j >= 0; j--) {
         const inv = invaderPool.active[j];
         if (shipPos.distanceToSquared(inv.position) < 3 * 3) {
-          spawnExplosion(inv.position, 0xff2d3a, 14); Sfx.explosion();
+          const mineHit = inv.userData.role === "drifter" && inv.userData.phase === "mine";
+          spawnExplosion(inv.position, mineHit ? 0x9b5dff : 0xff2d3a, mineHit ? 24 : 14); Sfx.explosion();
+          if (mineHit) term("PROXIMITY MINE DETONATED");
           if (state.target === inv) state.target = null;
-          invaderPool.release(inv); damageHull(22); if (!state.running) return;
+          invaderPool.release(inv); damageHull(mineHit ? 36 : 22); if (!state.running) return;
         }
       }
 
@@ -1405,7 +1601,7 @@
     }
 
     // --- Camera ---
-    const fovTarget = controlAxes.boost && state.running ? FOV_BOOST : FOV_BASE;
+    const fovTarget = state.boostActive && state.running ? FOV_BOOST : FOV_BASE;
     camera.fov = lerp(camera.fov, fovTarget, 1 - Math.pow(0.01, dt));
     camera.updateProjectionMatrix();
 
@@ -1441,7 +1637,7 @@
         ui.lockDist.textContent = Math.round(shipPos.distanceTo(state.target.position));
         // lead indicator
         const dist = shipPos.distanceTo(state.target.position);
-        tmpA.copy(state.target.userData.vel).multiplyScalar(dist / BULLET_SPEED).add(state.target.position);
+        tmpA.copy(state.target.userData.vel).multiplyScalar(dist / getActiveWeapon().speed).add(state.target.position);
         const ls = worldToScreen(tmpA);
         if (ls.visible) { ui.lead.style.display = "block"; ui.lead.style.left = ls.x + "px"; ui.lead.style.top = ls.y + "px"; }
         else ui.lead.style.display = "none";
