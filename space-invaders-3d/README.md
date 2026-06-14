@@ -22,9 +22,9 @@ python3 -m http.server 8000
 # then open http://localhost:8000 in a browser
 ```
 
-> A local server is recommended because the page loads Three.js (and its post-processing
-> add-ons + the Earth/moon textures) as ES modules / assets from a CDN. Opening `index.html`
-> directly via `file://` may be blocked by the browser's module/CORS rules.
+> A local server is recommended because browsers apply module/CORS rules to ES modules and
+> textures. Production deploys should serve the vendored files in `vendor/` and `assets/` so
+> startup does not depend on CDN availability.
 
 ## Deploy to Vercel
 
@@ -42,6 +42,20 @@ vercel --prod          # deploy; accept the defaults (no build, root output)
 **Option B — Git integration (auto-deploy on push):** import the repo at
 <https://vercel.com/new> (framework preset **Other**, no build command), set the production
 branch, and every push redeploys.
+
+## Asset strategy
+
+Production reliability favors local static assets:
+
+- `index.html` maps `three` and `three/addons/` to `./vendor/three/` in its importmap and
+  tries those module files before falling back to pinned Three.js `0.160.0` CDN URLs.
+- `space-invaders-3d/vendor/README.md` lists the Three.js module and add-on files that should
+  be committed for fully offline production startup.
+- Planet and moon textures live under `assets/planets/` and load from local paths first. If a
+  local texture is absent or corrupt, the loader falls back to the matching pinned CDN texture;
+  if both fail, the game uses generated canvas fallback textures so launch is not blocked.
+- Keep CDN fallbacks pinned to the same Three.js version as the vendored modules to avoid shader
+  or addon compatibility drift.
 
 ## Controls
 
@@ -80,13 +94,15 @@ pauses and shows a click-to-resume prompt).
 Everything lives in `index.html`:
 
 - **Rendering** — Three.js `WebGLRenderer` with ACES tone mapping and an `EffectComposer`
-  bloom chain (`UnrealBloomPass` + `OutputPass`, loaded from the same unpkg CDN via the
-  importmap). A `LOW_FX` path auto-detects weak/mobile devices and disables bloom and lowers
-  pixel ratio.
-- **Planet** — real Three.js example textures (day map, night city lights, clouds, specular)
-  loaded from the CDN, blended in a custom day/night `ShaderMaterial` by the sun direction so
-  city lights only glow on the dark side; a fresnel `ShaderMaterial` adds the blue atmosphere,
-  with a separate cloud sphere and a distant moon. A canvas-texture fallback covers load errors.
+  bloom chain (`UnrealBloomPass` + `OutputPass`). The importmap points to local vendored
+  modules first, with pinned CDN fallback used only when local modules are missing. A `LOW_FX`
+  path auto-detects weak/mobile devices and disables bloom and lowers pixel ratio.
+- **Planet** — local Three.js-style planet textures (day map, night city lights, clouds,
+  specular, normal, and moon) are loaded from `assets/planets/` first, then from the pinned CDN
+  if local files are missing. They are blended in a custom day/night `ShaderMaterial` by the sun
+  direction so city lights only glow on the dark side; a fresnel `ShaderMaterial` adds the blue
+  atmosphere, with a separate cloud sphere and a distant moon. A canvas-texture fallback covers
+  load errors.
 - **Flight** — true 6DOF: the ship carries a position and a `Quaternion`; pitch/yaw/roll build a
   local-space delta quaternion (no gimbal lock, natural banking), throttle/boost drive velocity
   with inertia, and motion is soft-bounded to a play sphere.

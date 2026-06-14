@@ -325,18 +325,36 @@
   <script type="importmap">
   {
     "imports": {
-      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      "three": "./vendor/three/three.module.js",
+      "three/addons/": "./vendor/three/addons/"
     }
   }
   </script>
 
   <script type="module">
-  import * as THREE from "three";
-  import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
-  import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
-  import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
-  import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
+  const CDN_THREE_VERSION = "0.160.0";
+  const CDN_THREE_BASE = `https://unpkg.com/three@${CDN_THREE_VERSION}`;
+
+  async function importWithCdnFallback(localPath, cdnPath, label) {
+    try {
+      return await import(localPath);
+    } catch (err) {
+      console.warn(`${label} local module unavailable; falling back to CDN.`, err);
+      return import(cdnPath);
+    }
+  }
+
+  const [THREE, effectComposerModule, renderPassModule, unrealBloomPassModule, outputPassModule] = await Promise.all([
+    importWithCdnFallback("./vendor/three/three.module.js", `${CDN_THREE_BASE}/build/three.module.js`, "Three.js"),
+    importWithCdnFallback("./vendor/three/addons/postprocessing/EffectComposer.js", `${CDN_THREE_BASE}/examples/jsm/postprocessing/EffectComposer.js`, "EffectComposer"),
+    importWithCdnFallback("./vendor/three/addons/postprocessing/RenderPass.js", `${CDN_THREE_BASE}/examples/jsm/postprocessing/RenderPass.js`, "RenderPass"),
+    importWithCdnFallback("./vendor/three/addons/postprocessing/UnrealBloomPass.js", `${CDN_THREE_BASE}/examples/jsm/postprocessing/UnrealBloomPass.js`, "UnrealBloomPass"),
+    importWithCdnFallback("./vendor/three/addons/postprocessing/OutputPass.js", `${CDN_THREE_BASE}/examples/jsm/postprocessing/OutputPass.js`, "OutputPass"),
+  ]);
+  const { EffectComposer } = effectComposerModule;
+  const { RenderPass } = renderPassModule;
+  const { UnrealBloomPass } = unrealBloomPassModule;
+  const { OutputPass } = outputPassModule;
 
   const { clamp, lerp } = THREE.MathUtils;
 
@@ -354,7 +372,8 @@
   const HISCORE_KEY = "starfall_defender_hiscore";
   const PROFILE_KEY = "starfall_defender_profile";
 
-  const TEX_BASE = "https://unpkg.com/three@0.160.0/examples/textures/planets/";
+  const LOCAL_TEX_BASE = "./assets/planets/";
+  const CDN_TEX_BASE = `${CDN_THREE_BASE}/examples/textures/planets/`;
   const LOW_FX = window.matchMedia("(pointer: coarse)").matches ||
                  (navigator.hardwareConcurrency || 8) <= 4;
   const IS_TOUCH = window.matchMedia("(pointer: coarse)").matches;
@@ -505,7 +524,7 @@
   planetGroup.position.set(-110, -55, -210);
   scene.add(planetGroup);
 
-  // Fallback canvas texture if a CDN texture fails
+  // Fallback canvas texture if both local and CDN textures fail
   function fallbackEarthTexture() {
     const c = document.createElement("canvas"); c.width = 1024; c.height = 512;
     const x = c.getContext("2d");
@@ -668,11 +687,20 @@
     const mgr = new THREE.LoadingManager();
     const loader = new THREE.TextureLoader(mgr);
     const tex = {};
+    const prepare = (t, srgb) => { if (srgb) t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = renderer.capabilities.getMaxAnisotropy(); };
     const get = (file, key, srgb) => loader.load(
-      TEX_BASE + file,
-      (t) => { if (srgb) t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = renderer.capabilities.getMaxAnisotropy(); },
+      LOCAL_TEX_BASE + file,
+      (t) => prepare(t, srgb),
       undefined,
-      () => { tex[key] = fallbackEarthTexture(); }   // on error
+      () => {
+        console.warn(`Local texture missing (${file}); falling back to CDN.`);
+        tex[key] = loader.load(
+          CDN_TEX_BASE + file,
+          (t) => prepare(t, srgb),
+          undefined,
+          () => { tex[key] = key === "normal" ? neutralNormalTexture() : fallbackEarthTexture(); }
+        );
+      }
     );
     tex.day = get("earth_atmos_2048.jpg", "day", true);
     tex.night = get("earth_lights_2048.png", "night", true);
