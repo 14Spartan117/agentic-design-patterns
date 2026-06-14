@@ -491,6 +491,7 @@
   import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
   import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
   import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
+  import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 
   const { clamp, lerp } = THREE.MathUtils;
 
@@ -693,13 +694,55 @@
   );
   let useBloom = false;
   composer.addPass(bloomPass);
+
+  // God rays — radial light-scattering streaks from the sun (HIGH quality only).
+  // Samples the already-bloomed frame toward the sun's screen position; only
+  // bright pixels cast shafts, so the sun and explosions glow into rays.
+  const GodRaysShader = {
+    uniforms: {
+      tDiffuse: { value: null },
+      uLight: { value: new THREE.Vector2(0.5, 0.5) },
+      uIntensity: { value: 0.0 },
+      uDecay: { value: 0.95 },
+      uDensity: { value: 0.8 },
+      uWeight: { value: 0.4 },
+    },
+    vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }",
+    fragmentShader: [
+      "uniform sampler2D tDiffuse; uniform vec2 uLight; uniform float uIntensity, uDecay, uDensity, uWeight;",
+      "varying vec2 vUv;",
+      "void main(){",
+      "  vec4 base = texture2D(tDiffuse, vUv);",
+      "  if (uIntensity <= 0.001) { gl_FragColor = base; return; }",
+      "  const int SAMPLES = 64;",
+      "  vec2 delta = (vUv - uLight) * (uDensity / float(SAMPLES));",
+      "  vec2 coord = vUv;",
+      "  float illum = 1.0;",
+      "  vec3 accum = vec3(0.0);",
+      "  for (int i = 0; i < SAMPLES; i++){",
+      "    coord -= delta;",
+      "    vec3 s = texture2D(tDiffuse, coord).rgb;",
+      "    float lum = max(s.r, max(s.g, s.b));",
+      "    accum += s * smoothstep(0.5, 1.0, lum) * illum * uWeight;",
+      "    illum *= uDecay;",
+      "  }",
+      "  gl_FragColor = base + vec4(accum * uIntensity, 1.0);",
+      "}",
+    ].join("\n"),
+  };
+  const godRaysPass = new ShaderPass(GodRaysShader);
+  godRaysPass.enabled = false;
+  composer.addPass(godRaysPass);
   composer.addPass(new OutputPass());
+
   function applyBloomQuality() {
     activeBloom = bloomMode === "auto" ? qualityPreset().bloom : bloomMode;
     useBloom = activeBloom !== "off";
     bloomPass.enabled = useBloom;
     bloomPass.strength = activeBloom === "high" ? 0.95 : activeBloom === "low" ? 0.45 : 0;
     bloomPass.radius = activeBloom === "high" ? 0.5 : 0.35;
+    // god rays only on HIGH, and only while bloom/flash effects are allowed
+    godRaysPass.enabled = activeBloom === "high" && !accessibility.disableBloom;
   }
   applyBloomQuality();
 
@@ -1034,14 +1077,24 @@
     const mgr = new THREE.LoadingManager();
     const loader = new THREE.TextureLoader(mgr);
     const tex = {};
+    const HI_BASE = "https://cdn.jsdelivr.net/npm/three-globe/example/img/";
+    const finish = (srgb) => (t) => { if (srgb) t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = renderer.capabilities.getMaxAnisotropy(); };
     const get = (file, key, srgb) => loader.load(
       TEX_BASE + file,
-      (t) => { if (srgb) t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = renderer.capabilities.getMaxAnisotropy(); },
+      finish(srgb),
       undefined,
       () => { tex[key] = fallbackEarthTexture(); }   // on error
     );
-    tex.day = get("earth_atmos_2048.jpg", "day", true);
-    tex.night = get("earth_lights_2048.png", "night", true);
+    // Try a higher-resolution source first; fall back to the proven 2048 texture,
+    // then to a generated canvas — so the planet can never end up broken.
+    const getHi = (hiFile, loFile, key, srgb) => loader.load(
+      HI_BASE + hiFile,
+      finish(srgb),
+      undefined,
+      () => { tex[key] = get(loFile, key, srgb); }
+    );
+    tex.day = getHi("earth-blue-marble.jpg", "earth_atmos_2048.jpg", "day", true);
+    tex.night = getHi("earth-night.jpg", "earth_lights_2048.png", "night", true);
     tex.spec = get("earth_specular_2048.jpg", "spec", false);
     tex.normal = get("earth_normal_2048.jpg", "normal", false);
     tex.cloud = get("earth_clouds_1024.png", "cloud", true);
@@ -2899,6 +2952,14 @@
     if (perf.slowFor > 4 && perf.cooldown <= 0) { lowerAutoQuality(`${Math.round(1000 / perf.avg)} FPS avg`); perf.slowFor = 0; perf.cooldown = 8; }
     const dt = Math.min(rawDt, 0.05);
     update(dt, clock.elapsedTime);
+
+    // Drive god rays from the sun's screen position (fade out when off-screen/behind)
+    if (godRaysPass.enabled) {
+      _proj.copy(sunFlare.position).project(camera);
+      const edge = Math.max(Math.abs(_proj.x), Math.abs(_proj.y));
+      godRaysPass.uniforms.uLight.value.set(_proj.x * 0.5 + 0.5, _proj.y * 0.5 + 0.5);
+      godRaysPass.uniforms.uIntensity.value = _proj.z < 1 ? clamp(0.85 - edge * 0.45, 0, 0.85) : 0;
+    }
 
     renderer.clear();
     if (useBloom && !accessibility.disableBloom) composer.render(); else renderer.render(scene, camera);
