@@ -96,6 +96,7 @@
   #shieldFill { background: linear-gradient(90deg, #1fa2ff, #7df9ff); box-shadow: 0 0 8px rgba(31,162,255,0.6); }
   #planetFill { background: linear-gradient(90deg, #b388ff, #7df9ff); box-shadow: 0 0 8px rgba(179,136,255,0.6); }
   #weaponFill { background: linear-gradient(90deg, #ffd166, #ffae42); box-shadow: 0 0 8px rgba(255,209,102,0.6); }
+  #thrFill    { background: linear-gradient(90deg, #7df9ff, #39ff8c); box-shadow: 0 0 8px rgba(125,249,255,0.6); }
   @media (max-width: 560px) { #systems { width: 140px; padding: 7px 8px; } }
 
   /* Bottom-left green terminal feed */
@@ -234,6 +235,7 @@
     <div class="bar"><div class="lbl"><span>SHIELD</span><span id="shieldVal">100</span></div><div class="track"><div id="shieldFill" class="fill"></div></div></div>
     <div class="bar"><div class="lbl"><span>PLANET</span><span id="planetVal">100</span></div><div class="track"><div id="planetFill" class="fill"></div></div></div>
     <div class="bar"><div class="lbl"><span>WEAPON</span><span id="weaponVal">RDY</span></div><div class="track"><div id="weaponFill" class="fill"></div></div></div>
+    <div class="bar"><div class="lbl"><span>THROTTLE</span><span id="thrVal2">60</span>%</div><div class="track"><div id="thrFill" class="fill"></div></div></div>
   </div>
 
   <div id="terminal" class="hud"></div>
@@ -245,6 +247,10 @@
   <div id="touch">
     <div id="stick"><div id="nub"></div></div>
     <div id="touchRight">
+      <div class="col">
+        <button id="thrUpBtn" aria-label="Throttle up">+</button>
+        <button id="thrDownBtn" aria-label="Throttle down">&minus;</button>
+      </div>
       <div class="col">
         <button id="rollLBtn" aria-label="Roll left">&#x21BA;</button>
         <button id="boostBtnT" aria-label="Boost">&gt;&gt;</button>
@@ -264,7 +270,7 @@
       Scramble your fighter into open space and destroy the invader swarm before
       their bombers reach the homeworld. Lock targets, lead your shots, and watch your hull.<br /><br />
       <span class="key">W</span><span class="key">S</span> pitch &nbsp; <span class="key">A</span><span class="key">D</span> yaw &nbsp; <span class="key">Q</span><span class="key">E</span> roll<br />
-      <span class="key">Mouse</span> aim &nbsp; <span class="key">Wheel</span>/<span class="key">Z</span><span class="key">X</span> throttle &nbsp; <span class="key">Shift</span> boost<br />
+      <span class="key">Mouse</span> aim &nbsp; <span class="key">R</span><span class="key">F</span> or wheel throttle &nbsp; <span class="key">Shift</span> boost<br />
       <span class="key">Space</span> / click fire &nbsp; <span class="key">C</span> toggle cockpit / chase<br /><br />
       On mobile: left stick steers, right buttons fire / boost / roll / view.
     </p>
@@ -402,23 +408,78 @@
 
   // Fallback canvas texture if a CDN texture fails
   function fallbackEarthTexture() {
-    const c = document.createElement("canvas"); c.width = 512; c.height = 256;
+    const c = document.createElement("canvas"); c.width = 1024; c.height = 512;
     const x = c.getContext("2d");
-    x.fillStyle = "#0e3b66"; x.fillRect(0, 0, 512, 256);
-    x.fillStyle = "#2f7d3a";
-    for (let i = 0; i < 40; i++) x.fillRect(Math.random() * 512, Math.random() * 256, 30 + Math.random() * 60, 20 + Math.random() * 40);
+    // ocean
+    const g = x.createLinearGradient(0, 0, 0, 512);
+    g.addColorStop(0, "#0a2f54"); g.addColorStop(0.5, "#0e4a78"); g.addColorStop(1, "#0a2f54");
+    x.fillStyle = g; x.fillRect(0, 0, 1024, 512);
+    // continents — clustered blobs of varied land colors
+    const land = ["#2f7d3a", "#3a8f45", "#6b8f3a", "#8a7a3e", "#4a8a52", "#7a6a3a"];
+    for (let i = 0; i < 34; i++) {
+      const cx = Math.random() * 1024, cy = 70 + Math.random() * 372;
+      x.fillStyle = land[Math.random() * land.length | 0];
+      const blobs = 10 + (Math.random() * 16 | 0);
+      for (let b = 0; b < blobs; b++) {
+        const r = 10 + Math.random() * 44;
+        x.beginPath(); x.arc(cx + (Math.random() - 0.5) * 130, cy + (Math.random() - 0.5) * 90, r, 0, Math.PI * 2); x.fill();
+      }
+    }
+    // scattered islands
+    x.fillStyle = "#3a8f45";
+    for (let i = 0; i < 120; i++) { x.beginPath(); x.arc(Math.random() * 1024, Math.random() * 512, 2 + Math.random() * 6, 0, Math.PI * 2); x.fill(); }
+    // city light dots
+    x.fillStyle = "rgba(255,228,150,0.5)";
+    for (let i = 0; i < 200; i++) x.fillRect(Math.random() * 1024, 90 + Math.random() * 330, 1.5, 1.5);
+    // ice caps
+    x.fillStyle = "rgba(235,245,255,0.92)"; x.fillRect(0, 0, 1024, 46); x.fillRect(0, 466, 1024, 46);
+    return new THREE.CanvasTexture(c);
+  }
+  function neutralNormalTexture() {
+    const c = document.createElement("canvas"); c.width = c.height = 4;
+    const x = c.getContext("2d"); x.fillStyle = "#8080ff"; x.fillRect(0, 0, 4, 4);
     return new THREE.CanvasTexture(c);
   }
 
   let planet, clouds, moon;
+  let satellites = [];
+  let defenseRing = null;
   let assetsReady = false;
+
+  // Orbital structures around the homeworld — adds shapes/detail near the planet
+  function buildOrbitalStructures() {
+    const ringMat = new THREE.MeshStandardMaterial({ color: 0x223047, metalness: 0.85, roughness: 0.4, emissive: 0x0a2a3a, emissiveIntensity: 0.7 });
+    defenseRing = new THREE.Mesh(new THREE.TorusGeometry(PR * 1.55, 0.8, 8, 90), ringMat);
+    defenseRing.rotation.x = Math.PI * 0.46; defenseRing.rotation.y = 0.3;
+    planetGroup.add(defenseRing);
+    // a second thin ring of debris/segments
+    const ring2 = new THREE.Mesh(new THREE.TorusGeometry(PR * 1.92, 0.3, 6, 64), ringMat);
+    ring2.rotation.x = Math.PI * 0.5; ring2.rotation.z = 0.6;
+    planetGroup.add(ring2);
+
+    const satMat = new THREE.MeshStandardMaterial({ color: 0x9fb3c8, metalness: 0.7, roughness: 0.5, emissive: 0x113355, emissiveIntensity: 0.5 });
+    const panelMat = new THREE.MeshStandardMaterial({ color: 0x1b3a6b, metalness: 0.5, roughness: 0.4, emissive: 0x0a2a4a, emissiveIntensity: 0.5 });
+    for (let i = 0; i < 12; i++) {
+      const sat = new THREE.Group();
+      sat.add(new THREE.Mesh(new THREE.BoxGeometry(2, 1.2, 1.2), satMat));
+      const p1 = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.12, 1.1), panelMat); p1.position.x = 2.6; sat.add(p1);
+      const p2 = p1.clone(); p2.position.x = -2.6; sat.add(p2);
+      const dish = new THREE.Mesh(new THREE.CylinderGeometry(0, 0.7, 0.5, 12), satMat); dish.rotation.x = Math.PI / 2; dish.position.z = 0.9; sat.add(dish);
+      sat.userData.angle = Math.random() * Math.PI * 2;
+      sat.userData.rad = PR * (1.32 + Math.random() * 0.8);
+      sat.userData.speed = 0.04 + Math.random() * 0.08;
+      sat.userData.y = (Math.random() - 0.5) * PR * 0.9;
+      planetGroup.add(sat); satellites.push(sat);
+    }
+  }
 
   function buildPlanet(tex) {
     const day = tex.day, night = tex.night, spec = tex.spec, cloud = tex.cloud, moonT = tex.moon;
+    const nrm = tex.normal || neutralNormalTexture();
 
     const planetMat = new THREE.ShaderMaterial({
       uniforms: {
-        uDay: { value: day }, uNight: { value: night }, uSpec: { value: spec },
+        uDay: { value: day }, uNight: { value: night }, uSpec: { value: spec }, uNormal: { value: nrm },
         uSunDir: { value: SUN_DIR.clone() },
       },
       vertexShader: `
@@ -429,13 +490,16 @@
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }`,
       fragmentShader: `
-        uniform sampler2D uDay, uNight, uSpec; uniform vec3 uSunDir;
+        uniform sampler2D uDay, uNight, uSpec, uNormal; uniform vec3 uSunDir;
         varying vec2 vUv; varying vec3 vWorldNormal;
         vec3 lin(vec3 c){ return pow(c, vec3(2.2)); }
         void main() {
-          float d = dot(normalize(vWorldNormal), normalize(uSunDir));
-          float day = smoothstep(-0.12, 0.28, d);
-          vec3 dayc = lin(texture2D(uDay, vUv).rgb);
+          // relief from the normal map gives terrain "shape" to the lighting
+          vec3 nmap = texture2D(uNormal, vUv).rgb * 2.0 - 1.0;
+          float relief = (nmap.x + nmap.y) * 0.22;
+          float d = dot(normalize(vWorldNormal), normalize(uSunDir)) + relief;
+          float day = smoothstep(-0.12, 0.30, d);
+          vec3 dayc = lin(texture2D(uDay, vUv).rgb) * (0.80 + 0.4 * clamp(0.5 + nmap.y, 0.0, 1.0));
           vec3 nightc = lin(texture2D(uNight, vUv).rgb) * 2.2;   // boost city lights for bloom
           float spec = texture2D(uSpec, vUv).r;
           float glint = pow(max(d, 0.0), 18.0) * spec;
@@ -443,7 +507,7 @@
           gl_FragColor = vec4(col, 1.0);
         }`,
     });
-    planet = new THREE.Mesh(new THREE.SphereGeometry(PR, 64, 48), planetMat);
+    planet = new THREE.Mesh(new THREE.SphereGeometry(PR, 96, 64), planetMat);
     planetGroup.add(planet);
 
     if (cloud) {
@@ -482,6 +546,7 @@
       moon.position.set(PR * 2.4, PR * 0.6, PR * 0.5);
       planetGroup.add(moon);
     }
+    buildOrbitalStructures();
   }
 
   // Visible sun flare (additive billboard, blooms into a star)
@@ -513,6 +578,7 @@
     tex.day = get("earth_atmos_2048.jpg", "day", true);
     tex.night = get("earth_lights_2048.png", "night", true);
     tex.spec = get("earth_specular_2048.jpg", "spec", false);
+    tex.normal = get("earth_normal_2048.jpg", "normal", false);
     tex.cloud = get("earth_clouds_1024.png", "cloud", true);
     tex.moon = get("moon_1024.jpg", "moon", true);
     mgr.onLoad = () => finishLoad(tex);
@@ -759,6 +825,7 @@
     shieldVal: document.getElementById("shieldVal"), shieldFill: document.getElementById("shieldFill"),
     planetVal: document.getElementById("planetVal"), planetFill: document.getElementById("planetFill"),
     weaponVal: document.getElementById("weaponVal"), weaponFill: document.getElementById("weaponFill"),
+    thrFill: document.getElementById("thrFill"), thrVal2: document.getElementById("thrVal2"),
     lockbox: document.getElementById("lockbox"), lockDist: document.querySelector("#lockbox .dist"),
     lead: document.getElementById("lead"), reticle: document.getElementById("aim"),
     radar: document.getElementById("radar"),
@@ -808,6 +875,8 @@
     barColor(ui.planetFill, state.integrity, "linear-gradient(90deg,#b388ff,#7df9ff)", "linear-gradient(90deg,#ffd166,#ffae42)");
     const wpct = clamp((1 - state.fireCooldown / FIRE_CD) * 100, 0, 100);
     ui.weaponFill.style.width = wpct + "%"; ui.weaponVal.textContent = state.fireCooldown <= 0 ? "RDY" : "...";
+    const tpct = Math.round(controlAxes.throttle * 100);
+    ui.thrFill.style.width = tpct + "%"; ui.thrVal2.textContent = tpct;
   }
 
   function addScore(points, atPos, color) {
@@ -876,8 +945,8 @@
     keys[e.code] = true;
     if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) e.preventDefault();
     if (e.code === "KeyC") toggleView();
-    if (e.code === "KeyZ") controlAxes.throttle = clamp(controlAxes.throttle - 0.1, 0, 1);
-    if (e.code === "KeyX") controlAxes.throttle = clamp(controlAxes.throttle + 0.1, 0, 1);
+    if (e.code === "KeyZ" || e.code === "KeyF") controlAxes.throttle = clamp(controlAxes.throttle - 0.1, 0, 1);
+    if (e.code === "KeyX" || e.code === "KeyR") controlAxes.throttle = clamp(controlAxes.throttle + 0.1, 0, 1);
   });
   window.addEventListener("keyup", (e) => { keys[e.code] = false; });
   window.addEventListener("wheel", (e) => {
@@ -924,20 +993,28 @@
   // Touch controls
   function setupTouch() {
     const stick = document.getElementById("stick"), nub = document.getElementById("nub");
-    let active = false, cx = 0, cy = 0;
+    let stickId = null, cx = 0, cy = 0;   // track the specific pointer driving the stick
     const R = 52;
     const move = (e) => {
-      if (!active) return;
-      const t = e.touches ? e.touches[0] : e;
-      let dx = t.clientX - cx, dy = t.clientY - cy;
+      if (stickId === null || e.pointerId !== stickId) return;
+      let dx = e.clientX - cx, dy = e.clientY - cy;
       const len = Math.hypot(dx, dy); if (len > R) { dx *= R / len; dy *= R / len; }
       nub.style.transform = `translate(${dx}px, ${dy}px)`;
       controlAxes.yaw = -clamp(dx / R, -1, 1);   // push right -> yaw right
       controlAxes.pitch = clamp(dy / R, -1, 1);  // push down -> nose up
     };
-    stick.addEventListener("pointerdown", (e) => { active = true; const r = stick.getBoundingClientRect(); cx = r.left + r.width / 2; cy = r.top + r.height / 2; move(e); e.preventDefault(); });
+    const endStick = (e) => {
+      if (stickId === null || e.pointerId !== stickId) return;   // ignore other fingers
+      stickId = null; nub.style.transform = "translate(0,0)"; controlAxes.yaw = 0; controlAxes.pitch = 0;
+    };
+    stick.addEventListener("pointerdown", (e) => {
+      stickId = e.pointerId;
+      const r = stick.getBoundingClientRect(); cx = r.left + r.width / 2; cy = r.top + r.height / 2;
+      move(e); e.preventDefault();
+    });
     window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", () => { if (!active) return; active = false; nub.style.transform = "translate(0,0)"; controlAxes.yaw = 0; controlAxes.pitch = 0; });
+    window.addEventListener("pointerup", endStick);
+    window.addEventListener("pointercancel", endStick);
 
     const hold = (id, on, off) => {
       const el = document.getElementById(id);
@@ -949,7 +1026,10 @@
     hold("boostBtnT", () => controlAxes.boost = true, () => controlAxes.boost = false);
     hold("rollLBtn", () => controlAxes.roll = 1, () => controlAxes.roll = 0);
     hold("rollRBtn", () => controlAxes.roll = -1, () => controlAxes.roll = 0);
-    document.getElementById("viewBtnT").addEventListener("pointerdown", (e) => { toggleView(); e.preventDefault(); });
+    const tap = (id, fn) => document.getElementById(id).addEventListener("pointerdown", (e) => { fn(); e.preventDefault(); });
+    tap("thrUpBtn", () => controlAxes.throttle = clamp(controlAxes.throttle + 0.15, 0, 1));
+    tap("thrDownBtn", () => controlAxes.throttle = clamp(controlAxes.throttle - 0.15, 0, 1));
+    tap("viewBtnT", () => toggleView());
   }
   setupTouch();
   window.addEventListener("touchstart", () => document.body.classList.add("show-touch"), { once: true });
@@ -1017,6 +1097,13 @@
     stars.rotation.y += dt * 0.002;
     if (planet) planet.rotation.y += dt * 0.012;
     if (clouds) clouds.rotation.y += dt * 0.018;
+    if (defenseRing) defenseRing.rotation.z += dt * 0.05;
+    for (const s of satellites) {
+      s.userData.angle += dt * s.userData.speed;
+      const a = s.userData.angle;
+      s.position.set(Math.cos(a) * s.userData.rad, s.userData.y, Math.sin(a) * s.userData.rad);
+      s.rotation.y = -a;
+    }
     if (player.userData.flare) player.userData.flare.scale.y = 0.7 + Math.sin(t * 30) * 0.3 + (controlAxes.boost ? 0.8 : 0);
 
     if (state.running && !state.paused) {
@@ -1086,8 +1173,14 @@
           // keep a strafing distance
           if (d < 35) desired.multiplyScalar(-1);
         } else {
-          desired = tmpA.copy(ud.vel).normalize();
-          if (desired.lengthSq() < 0.01) desired.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
+          // drifter: wander slowly, but steer back toward the fight if it strays
+          // out of engagement range, so an unshot drifter can never stall a wave
+          if (inv.position.distanceTo(shipPos) > 170) {
+            desired = tmpA.copy(shipPos).sub(inv.position).normalize();
+          } else {
+            desired = tmpA.copy(ud.vel).normalize();
+            if (desired.lengthSq() < 0.01) desired.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
+          }
         }
         ud.vel.lerp(desired.multiplyScalar(ud.speed), 1 - Math.pow(0.2, dt));
         inv.position.addScaledVector(ud.vel, dt);
