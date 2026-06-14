@@ -766,24 +766,80 @@
   // ---------------------------------------------------------------------------
   const Sfx = {
     ctx: null,
-    init() { if (this.ctx) return; const AC = window.AudioContext || window.webkitAudioContext; if (AC) this.ctx = new AC(); },
+    masterGain: null,
+    sfxGain: null,
+    musicGain: null,
+    volumes: { master: 1, sfx: 1, music: 1 },
+    volumeKeys: {
+      master: ["starfall.masterVolume", "masterVolume", "volume"],
+      sfx: ["starfall.sfxVolume", "sfxVolume"],
+      music: ["starfall.musicVolume", "musicVolume"],
+    },
+    init() {
+      if (this.ctx) return;
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      this.ctx = new AC();
+      this.masterGain = this.ctx.createGain();
+      this.sfxGain = this.ctx.createGain();
+      this.musicGain = this.ctx.createGain();
+      this.sfxGain.connect(this.masterGain);
+      this.musicGain.connect(this.masterGain);
+      this.masterGain.connect(this.ctx.destination);
+      this.loadVolumes();
+    },
+    readVolume(name, fallback = 1) {
+      for (const key of this.volumeKeys[name] || []) {
+        const raw = localStorage.getItem(key);
+        if (raw === null) continue;
+        const value = Number(raw);
+        if (Number.isFinite(value)) return Math.max(0, Math.min(1, value));
+      }
+      return fallback;
+    },
+    loadVolumes() {
+      this.volumes.master = this.readVolume("master", this.volumes.master);
+      this.volumes.sfx = this.readVolume("sfx", this.volumes.sfx);
+      this.volumes.music = this.readVolume("music", this.volumes.music);
+      if (this.masterGain) this.masterGain.gain.value = this.volumes.master;
+      if (this.sfxGain) this.sfxGain.gain.value = this.volumes.sfx;
+      if (this.musicGain) this.musicGain.gain.value = this.volumes.music;
+    },
     resume() { if (this.ctx && this.ctx.state === "suspended") this.ctx.resume(); },
-    tone({ freq = 440, type = "square", dur = 0.12, gain = 0.16, slideTo = null }) {
+    panFromWorld(pos) {
+      if (!pos) return 0;
+      tmpA.copy(pos).sub(shipPos);
+      const distance = Math.max(1, tmpA.length());
+      return Math.max(-1, Math.min(1, tmpA.dot(rightV) / distance));
+    },
+    tone({ freq = 440, type = "square", dur = 0.12, gain = 0.16, slideTo = null, pitchVar = 0.035, bus = "sfx", pos = null }) {
       if (!this.ctx) return;
+      this.loadVolumes();
       const t = this.ctx.currentTime, osc = this.ctx.createOscillator(), g = this.ctx.createGain();
-      osc.type = type; osc.frequency.setValueAtTime(freq, t);
-      if (slideTo) osc.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+      const pitch = 1 + (Math.random() * 2 - 1) * pitchVar;
+      const startFreq = Math.max(0.0001, freq * pitch);
+      const endFreq = slideTo ? Math.max(0.0001, slideTo * pitch) : null;
+      const targetBus = bus === "music" ? this.musicGain : this.sfxGain;
+      let destination = targetBus;
+      osc.type = type; osc.frequency.setValueAtTime(startFreq, t);
+      if (endFreq) osc.frequency.exponentialRampToValueAtTime(endFreq, t + dur);
       g.gain.setValueAtTime(gain, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-      osc.connect(g).connect(this.ctx.destination); osc.start(t); osc.stop(t + dur);
+      if (pos && this.ctx.createStereoPanner) {
+        const pan = this.ctx.createStereoPanner();
+        pan.pan.setValueAtTime(this.panFromWorld(pos), t);
+        pan.connect(targetBus);
+        destination = pan;
+      }
+      osc.connect(g).connect(destination); osc.start(t); osc.stop(t + dur);
     },
     laser() { this.tone({ freq: 900, slideTo: 240, type: "square", dur: 0.10, gain: 0.07 }); },
-    explosion() { this.tone({ freq: 200, slideTo: 45, type: "sawtooth", dur: 0.28, gain: 0.14 }); },
-    impact() { this.tone({ freq: 90, slideTo: 28, type: "sawtooth", dur: 0.5, gain: 0.22 }); },
-    playerHit() { this.tone({ freq: 150, slideTo: 40, type: "square", dur: 0.35, gain: 0.18 }); },
-    hit() { this.tone({ freq: 320, slideTo: 120, type: "triangle", dur: 0.16, gain: 0.12 }); },
-    lock() { this.tone({ freq: 660, type: "triangle", dur: 0.06, gain: 0.1 }); setTimeout(() => this.tone({ freq: 990, type: "triangle", dur: 0.08, gain: 0.1 }), 70); },
-    boost() { this.tone({ freq: 180, slideTo: 520, type: "sawtooth", dur: 0.35, gain: 0.08 }); },
-    waveClear() { this.tone({ freq: 523, type: "triangle", dur: 0.12, gain: 0.13 }); setTimeout(() => this.tone({ freq: 784, type: "triangle", dur: 0.18, gain: 0.13 }), 120); },
+    explosion(pos) { this.tone({ freq: 200, slideTo: 45, type: "sawtooth", dur: 0.28, gain: 0.14, pitchVar: 0.08, pos }); },
+    impact() { this.tone({ freq: 90, slideTo: 28, type: "sawtooth", dur: 0.5, gain: 0.22, pitchVar: 0.05 }); },
+    playerHit() { this.tone({ freq: 150, slideTo: 40, type: "square", dur: 0.35, gain: 0.18, pitchVar: 0.05 }); },
+    hit(pos) { this.tone({ freq: 320, slideTo: 120, type: "triangle", dur: 0.16, gain: 0.12, pitchVar: 0.07, pos }); },
+    lock() { this.tone({ freq: 660, type: "triangle", dur: 0.06, gain: 0.1, pitchVar: 0.015 }); setTimeout(() => this.tone({ freq: 990, type: "triangle", dur: 0.08, gain: 0.1, pitchVar: 0.015 }), 70); },
+    boost() { this.tone({ freq: 180, slideTo: 520, type: "sawtooth", dur: 0.35, gain: 0.08, pitchVar: 0.025 }); },
+    waveClear() { this.tone({ freq: 523, type: "triangle", dur: 0.12, gain: 0.13, pitchVar: 0.02 }); setTimeout(() => this.tone({ freq: 784, type: "triangle", dur: 0.18, gain: 0.13, pitchVar: 0.02 }), 120); },
   };
 
   // ---------------------------------------------------------------------------
@@ -1205,7 +1261,7 @@
           const inv = invaderPool.active[j];
           if (b.position.distanceToSquared(inv.position) < 2.2 * 2.2) {
             spawnExplosion(inv.position, inv.userData.core.material.color.getHex(), 16);
-            Sfx.explosion();
+            Sfx.explosion(inv.position);
             const dist = inv.position.distanceTo(shipPos);
             const points = inv.userData.role === "bomber" ? 75 : inv.userData.role === "hunter" ? 50 : 30;
             addScore(points, inv.position, "#ffd166");
@@ -1241,7 +1297,7 @@
           tmpA.copy(shipPos).sub(a.position).normalize();
           shipPos.copy(a.position).addScaledVector(tmpA, rr + 0.2);
           shipVel.addScaledVector(tmpA, 14);
-          spawnExplosion(shipPos, 0xffb86b, 8); Sfx.hit();
+          spawnExplosion(shipPos, 0xffb86b, 8); Sfx.hit(a.position);
           damageHull(16 * dt * 60 * 0.02 + 8); if (!state.running) return;
         }
       }
@@ -1250,7 +1306,7 @@
       for (let j = invaderPool.active.length - 1; j >= 0; j--) {
         const inv = invaderPool.active[j];
         if (shipPos.distanceToSquared(inv.position) < 3 * 3) {
-          spawnExplosion(inv.position, 0xff2d3a, 14); Sfx.explosion();
+          spawnExplosion(inv.position, 0xff2d3a, 14); Sfx.explosion(inv.position);
           if (state.target === inv) state.target = null;
           invaderPool.release(inv); damageHull(22); if (!state.running) return;
         }
