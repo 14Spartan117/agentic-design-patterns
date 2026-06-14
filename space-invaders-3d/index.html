@@ -316,6 +316,7 @@
   const BOOST_MULT = 2.3;
   const PITCH_RATE = 1.7, YAW_RATE = 1.4, ROLL_RATE = 2.6;  // rad/s at full input
   const BULLET_SPEED = 170, BULLET_RANGE = 320, FIRE_CD = 0.13;
+  const PLAYER_BULLET_DAMAGE = 1;
   const ENEMY_BULLET_SPEED = 75, ENEMY_BULLET_RANGE = 260;
   const FOV_BASE = 70, FOV_BOOST = 84;
   const RADAR_RANGE = 280;
@@ -687,6 +688,16 @@
   const invaderGeo = new THREE.IcosahedronGeometry(1.0, 0);
   const invaderRingGeo = new THREE.TorusGeometry(1.15, 0.16, 8, 20);
   const invaderEyeGeo = new THREE.SphereGeometry(0.26, 12, 12);
+  const INVADER_ROLES = {
+    drifter: { hp: 1, color: 0xff2d3a },
+    hunter: { hp: 2, color: 0xff2d3a },
+    bomber: { hp: 3, color: 0xff8c1a },
+    elite: { hp: 6, color: 0xb388ff },
+    miniboss: { hp: 10, color: 0x7df9ff },
+  };
+  const INVADER_HIT_FLASH_TIME = 0.08;
+  const INVADER_BASE_EMISSIVE_INTENSITY = 1.4;
+  const INVADER_FLASH_EMISSIVE_INTENSITY = 3.0;
   function makeInvaderMesh() {
     const group = new THREE.Group();
     const core = new THREE.Mesh(invaderGeo, new THREE.MeshStandardMaterial({
@@ -929,12 +940,17 @@
     inv.userData.vel = new THREE.Vector3();
     inv.userData.speed = state.invSpeed * (0.85 + Math.random() * 0.4);
     inv.userData.fireTimer = 1 + Math.random() * 2;
-    inv.userData.hp = 1;
     const r = Math.random();
     inv.userData.role = r < state.hunterRatio ? "hunter" : r < state.hunterRatio + 0.25 ? "bomber" : "drifter";
+    const roleConfig = INVADER_ROLES[inv.userData.role] || INVADER_ROLES.drifter;
+    inv.userData.hp = roleConfig.hp;
+    inv.userData.maxHp = roleConfig.hp;
+    inv.userData.baseColor = roleConfig.color;
+    inv.userData.hitFlashTimer = 0;
     inv.userData.spin = (Math.random() - 0.5) * 2;
-    if (inv.userData.role === "bomber") inv.userData.core.material.color.set(0xff8c1a), inv.userData.core.material.emissive.set(0xff8c1a);
-    else inv.userData.core.material.color.set(0xff2d3a), inv.userData.core.material.emissive.set(0xff2d3a);
+    inv.userData.core.material.color.set(roleConfig.color);
+    inv.userData.core.material.emissive.set(roleConfig.color);
+    inv.userData.core.material.emissiveIntensity = INVADER_BASE_EMISSIVE_INTENSITY;
   }
 
   // ---------------------------------------------------------------------------
@@ -1158,6 +1174,14 @@
       for (let i = invaderPool.active.length - 1; i >= 0; i--) {
         const inv = invaderPool.active[i];
         const ud = inv.userData;
+        if (ud.hitFlashTimer > 0) {
+          ud.hitFlashTimer = Math.max(0, ud.hitFlashTimer - dt);
+          if (ud.hitFlashTimer === 0) {
+            ud.core.material.color.set(ud.baseColor);
+            ud.core.material.emissive.set(ud.baseColor);
+            ud.core.material.emissiveIntensity = INVADER_BASE_EMISSIVE_INTENSITY;
+          }
+        }
         let desired;
         if (ud.role === "bomber") {
           desired = tmpA.copy(planetWorld).sub(inv.position).normalize();
@@ -1204,13 +1228,20 @@
         for (let j = invaderPool.active.length - 1; j >= 0; j--) {
           const inv = invaderPool.active[j];
           if (b.position.distanceToSquared(inv.position) < 2.2 * 2.2) {
-            spawnExplosion(inv.position, inv.userData.core.material.color.getHex(), 16);
-            Sfx.explosion();
-            const dist = inv.position.distanceTo(shipPos);
-            const points = inv.userData.role === "bomber" ? 75 : inv.userData.role === "hunter" ? 50 : 30;
-            addScore(points, inv.position, "#ffd166");
-            if (state.target === inv) state.target = null;
-            invaderPool.release(inv); hit = true; break;
+            inv.userData.hp -= PLAYER_BULLET_DAMAGE;
+            inv.userData.hitFlashTimer = INVADER_HIT_FLASH_TIME;
+            inv.userData.core.material.color.set(0xffffff);
+            inv.userData.core.material.emissive.set(0xffffff);
+            inv.userData.core.material.emissiveIntensity = INVADER_FLASH_EMISSIVE_INTENSITY;
+            spawnExplosion(inv.position, inv.userData.baseColor, inv.userData.hp <= 0 ? 16 : 5);
+            if (inv.userData.hp <= 0) {
+              Sfx.explosion();
+              const points = inv.userData.role === "bomber" ? 75 : inv.userData.role === "hunter" ? 50 : 30;
+              addScore(points, inv.position, "#ffd166");
+              if (state.target === inv) state.target = null;
+              invaderPool.release(inv);
+            }
+            hit = true; break;
           }
         }
         if (!hit) for (const a of asteroids) {
