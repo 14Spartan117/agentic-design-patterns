@@ -315,10 +315,34 @@
   const BASE_SPEED = 36;            // top cruise speed
   const BOOST_MULT = 2.3;
   const PITCH_RATE = 1.7, YAW_RATE = 1.4, ROLL_RATE = 2.6;  // rad/s at full input
-  const BULLET_SPEED = 170, BULLET_RANGE = 320, FIRE_CD = 0.13;
-  const ENEMY_BULLET_SPEED = 75, ENEMY_BULLET_RANGE = 260;
   const FOV_BASE = 70, FOV_BOOST = 84;
   const RADAR_RANGE = 280;
+
+  const GAME_CONFIG = {
+    weapons: {
+      playerLaser: { speed: 170, range: 320, cooldown: 0.13, damage: 1 },
+      enemyBlaster: { speed: 75, range: 260, cooldownMin: 1.6, cooldownVariance: 2.0, fireBudgetCost: 0.25 },
+    },
+    enemyRoles: {
+      hunter: { hp: 1, score: 50, color: 0xff2d3a, speedMultiplierMin: 0.85, speedMultiplierVariance: 0.4 },
+      bomber: { hp: 1, score: 75, color: 0xff8c1a, speedMultiplierMin: 0.85, speedMultiplierVariance: 0.4 },
+      drifter: { hp: 1, score: 30, color: 0xff2d3a, speedMultiplierMin: 0.85, speedMultiplierVariance: 0.4 },
+    },
+    waveScaling: {
+      spawnBase: 4, spawnPerWave: 2, firstSpawnDelay: 0.6, spawnIntervalBase: 1.4,
+      spawnIntervalMin: 0.4, spawnIntervalStep: 0.1, invaderSpeedBase: 13, invaderSpeedStep: 1.6,
+      hunterRatioBase: 0.45, hunterRatioStep: 0.06, hunterRatioMax: 0.85, bomberRatio: 0.25,
+    },
+    upgrades: {
+      waveClearHullRepair: 12, shieldRegenPerSecond: 16, shieldRegenDelay: 4,
+    },
+    scoring: {
+      waveClear: 150,
+    },
+    damage: {
+      bomberPlanetImpact: 9, enemyBulletHull: 12, asteroidHullBase: 8, asteroidHullPerFrameAt60Fps: 16 * 0.02, invaderRamHull: 22,
+    },
+  };
   const HISCORE_KEY = "starfall_defender_hiscore";
 
   const TEX_BASE = "https://unpkg.com/three@0.160.0/examples/textures/planets/";
@@ -738,7 +762,7 @@
     const b = playerBullets.acquire();
     b.position.copy(player.position).addScaledVector(forward, 1.6);
     b.quaternion.copy(shipQuat); b.rotateX(Math.PI / 2);
-    b.userData.vel = forward.clone().multiplyScalar(BULLET_SPEED).addScaledVector(shipVel, 0.5);
+    b.userData.vel = forward.clone().multiplyScalar(GAME_CONFIG.weapons.playerLaser.speed).addScaledVector(shipVel, 0.5);
     b.userData.from = b.position.clone();
   }
   function spawnEnemyBullet(inv) {
@@ -746,8 +770,8 @@
     b.position.copy(inv.position);
     // lead the player a little
     const dist = inv.position.distanceTo(player.position);
-    const lead = tmpA.copy(player.position).addScaledVector(shipVel, dist / ENEMY_BULLET_SPEED * 0.6);
-    b.userData.vel = lead.sub(inv.position).normalize().multiplyScalar(ENEMY_BULLET_SPEED);
+    const lead = tmpA.copy(player.position).addScaledVector(shipVel, dist / GAME_CONFIG.weapons.enemyBlaster.speed * 0.6);
+    b.userData.vel = lead.sub(inv.position).normalize().multiplyScalar(GAME_CONFIG.weapons.enemyBlaster.speed);
     b.userData.from = b.position.clone();
   }
   function spawnExplosion(pos, color, n) {
@@ -873,7 +897,7 @@
     ui.planetVal.textContent = Math.round(state.integrity); ui.planetFill.style.width = clamp(state.integrity, 0, 100) + "%";
     barColor(ui.hullFill, state.hull, "linear-gradient(90deg,#39ff8c,#7df9ff)", "linear-gradient(90deg,#ffd166,#ffae42)");
     barColor(ui.planetFill, state.integrity, "linear-gradient(90deg,#b388ff,#7df9ff)", "linear-gradient(90deg,#ffd166,#ffae42)");
-    const wpct = clamp((1 - state.fireCooldown / FIRE_CD) * 100, 0, 100);
+    const wpct = clamp((1 - state.fireCooldown / GAME_CONFIG.weapons.playerLaser.cooldown) * 100, 0, 100);
     ui.weaponFill.style.width = wpct + "%"; ui.weaponVal.textContent = state.fireCooldown <= 0 ? "RDY" : "...";
     const tpct = Math.round(controlAxes.throttle * 100);
     ui.thrFill.style.width = tpct + "%"; ui.thrVal2.textContent = tpct;
@@ -889,7 +913,7 @@
     let a = amount;
     if (state.shield > 0) { const s = Math.min(state.shield, a); state.shield -= s; a -= s; }
     if (a > 0) state.hull -= a;
-    state.shieldRegenTimer = 4;
+    state.shieldRegenTimer = GAME_CONFIG.upgrades.shieldRegenDelay;
     state.shake = Math.max(state.shake, 1.0);
     syncHud();
     if (state.hull <= 0) endGame("SHIP DESTROYED", "Your fighter was torn apart in the void.");
@@ -907,11 +931,12 @@
   // ---------------------------------------------------------------------------
   function beginWave(n) {
     state.wave = n;
-    state.toSpawn = 4 + n * 2;
-    state.spawnTimer = 0.6;
-    state.spawnInterval = Math.max(0.4, 1.4 - (n - 1) * 0.1);
-    state.invSpeed = 13 + (n - 1) * 1.6;
-    state.hunterRatio = Math.min(0.85, 0.45 + (n - 1) * 0.06);
+    const wave = GAME_CONFIG.waveScaling;
+    state.toSpawn = wave.spawnBase + n * wave.spawnPerWave;
+    state.spawnTimer = wave.firstSpawnDelay;
+    state.spawnInterval = Math.max(wave.spawnIntervalMin, wave.spawnIntervalBase - (n - 1) * wave.spawnIntervalStep);
+    state.invSpeed = wave.invaderSpeedBase + (n - 1) * wave.invaderSpeedStep;
+    state.hunterRatio = Math.min(wave.hunterRatioMax, wave.hunterRatioBase + (n - 1) * wave.hunterRatioStep);
     syncHud(); toast("WAVE " + n); term("WAVE " + n + " INBOUND");
   }
 
@@ -927,14 +952,16 @@
     inv.position.copy(player.position).addScaledVector(dir, 140 + Math.random() * 60);
     if (inv.position.length() > WORLD_R) inv.position.setLength(WORLD_R * 0.9);
     inv.userData.vel = new THREE.Vector3();
-    inv.userData.speed = state.invSpeed * (0.85 + Math.random() * 0.4);
     inv.userData.fireTimer = 1 + Math.random() * 2;
-    inv.userData.hp = 1;
+    const wave = GAME_CONFIG.waveScaling;
     const r = Math.random();
-    inv.userData.role = r < state.hunterRatio ? "hunter" : r < state.hunterRatio + 0.25 ? "bomber" : "drifter";
+    inv.userData.role = r < state.hunterRatio ? "hunter" : r < state.hunterRatio + wave.bomberRatio ? "bomber" : "drifter";
+    const role = GAME_CONFIG.enemyRoles[inv.userData.role];
+    inv.userData.speed = state.invSpeed * (role.speedMultiplierMin + Math.random() * role.speedMultiplierVariance);
+    inv.userData.hp = role.hp;
     inv.userData.spin = (Math.random() - 0.5) * 2;
-    if (inv.userData.role === "bomber") inv.userData.core.material.color.set(0xff8c1a), inv.userData.core.material.emissive.set(0xff8c1a);
-    else inv.userData.core.material.color.set(0xff2d3a), inv.userData.core.material.emissive.set(0xff2d3a);
+    inv.userData.core.material.color.set(role.color);
+    inv.userData.core.material.emissive.set(role.color);
   }
 
   // ---------------------------------------------------------------------------
@@ -1143,11 +1170,11 @@
 
       // --- Firing ---
       state.fireCooldown -= dt;
-      if (controlAxes.fire && state.fireCooldown <= 0) { spawnPlayerBullet(); Sfx.laser(); state.fireCooldown = FIRE_CD; }
+      if (controlAxes.fire && state.fireCooldown <= 0) { spawnPlayerBullet(); Sfx.laser(); state.fireCooldown = GAME_CONFIG.weapons.playerLaser.cooldown; }
 
       // --- Shield regen ---
       if (state.shieldRegenTimer > 0) state.shieldRegenTimer -= dt;
-      else if (state.shield < 100) { state.shield = Math.min(100, state.shield + 16 * dt); }
+      else if (state.shield < 100) { state.shield = Math.min(100, state.shield + GAME_CONFIG.upgrades.shieldRegenPerSecond * dt); }
 
       // --- Spawn ---
       if (state.toSpawn > 0) { state.spawnTimer -= dt; if (state.spawnTimer <= 0) { spawnInvader(); state.toSpawn--; state.spawnTimer = state.spawnInterval; } }
@@ -1165,7 +1192,7 @@
           if (inv.position.distanceTo(planetWorld) < PR + 6) {
             spawnExplosion(inv.position, 0xff8c1a, 18); invaderPool.release(inv);
             if (state.target === inv) state.target = null;
-            damagePlanet(9); if (!state.running) return; continue;
+            damagePlanet(GAME_CONFIG.damage.bomberPlanetImpact); if (!state.running) return; continue;
           }
         } else if (ud.role === "hunter") {
           desired = tmpA.copy(shipPos).sub(inv.position);
@@ -1189,9 +1216,9 @@
         // hunter fire
         if (ud.role === "hunter") {
           ud.fireTimer -= dt;
-          if (ud.fireTimer <= 0 && state.enemyFireBudget > 0.25 && inv.position.distanceTo(shipPos) < 160) {
+          if (ud.fireTimer <= 0 && state.enemyFireBudget > GAME_CONFIG.weapons.enemyBlaster.fireBudgetCost && inv.position.distanceTo(shipPos) < 160) {
             spawnEnemyBullet(inv); state.enemyFireBudget = 0;
-            ud.fireTimer = 1.6 + Math.random() * 2;
+            ud.fireTimer = GAME_CONFIG.weapons.enemyBlaster.cooldownMin + Math.random() * GAME_CONFIG.weapons.enemyBlaster.cooldownVariance;
           }
         }
       }
@@ -1206,17 +1233,20 @@
           if (b.position.distanceToSquared(inv.position) < 2.2 * 2.2) {
             spawnExplosion(inv.position, inv.userData.core.material.color.getHex(), 16);
             Sfx.explosion();
-            const dist = inv.position.distanceTo(shipPos);
-            const points = inv.userData.role === "bomber" ? 75 : inv.userData.role === "hunter" ? 50 : 30;
-            addScore(points, inv.position, "#ffd166");
-            if (state.target === inv) state.target = null;
-            invaderPool.release(inv); hit = true; break;
+            inv.userData.hp -= GAME_CONFIG.weapons.playerLaser.damage;
+            if (inv.userData.hp <= 0) {
+              const points = GAME_CONFIG.enemyRoles[inv.userData.role].score;
+              addScore(points, inv.position, "#ffd166");
+              if (state.target === inv) state.target = null;
+              invaderPool.release(inv);
+            }
+            hit = true; break;
           }
         }
         if (!hit) for (const a of asteroids) {
           if (b.position.distanceToSquared(a.position) < (a.userData.radius + 0.4) ** 2) { spawnExplosion(b.position, 0x9a9a9a, 6); hit = true; break; }
         }
-        if (hit || b.position.distanceToSquared(b.userData.from) > BULLET_RANGE * BULLET_RANGE) playerBullets.release(b);
+        if (hit || b.position.distanceToSquared(b.userData.from) > GAME_CONFIG.weapons.playerLaser.range * GAME_CONFIG.weapons.playerLaser.range) playerBullets.release(b);
       }
 
       // --- Enemy bullets ---
@@ -1226,9 +1256,9 @@
         if (b.position.distanceToSquared(shipPos) < 2.2 * 2.2) {
           spawnExplosion(shipPos, 0xff5d73, 10); Sfx.playerHit(); enemyBullets.release(b);
           term("INCOMING FIRE — SHIELD " + Math.round(state.shield) + "%");
-          damageHull(12); if (!state.running) return; continue;
+          damageHull(GAME_CONFIG.damage.enemyBulletHull); if (!state.running) return; continue;
         }
-        if (b.position.distanceToSquared(b.userData.from) > ENEMY_BULLET_RANGE * ENEMY_BULLET_RANGE) enemyBullets.release(b);
+        if (b.position.distanceToSquared(b.userData.from) > GAME_CONFIG.weapons.enemyBlaster.range * GAME_CONFIG.weapons.enemyBlaster.range) enemyBullets.release(b);
       }
 
       // --- Asteroids (drift/spin) + ship collision ---
@@ -1242,7 +1272,7 @@
           shipPos.copy(a.position).addScaledVector(tmpA, rr + 0.2);
           shipVel.addScaledVector(tmpA, 14);
           spawnExplosion(shipPos, 0xffb86b, 8); Sfx.hit();
-          damageHull(16 * dt * 60 * 0.02 + 8); if (!state.running) return;
+          damageHull(GAME_CONFIG.damage.asteroidHullPerFrameAt60Fps * dt * 60 + GAME_CONFIG.damage.asteroidHullBase); if (!state.running) return;
         }
       }
 
@@ -1252,7 +1282,7 @@
         if (shipPos.distanceToSquared(inv.position) < 3 * 3) {
           spawnExplosion(inv.position, 0xff2d3a, 14); Sfx.explosion();
           if (state.target === inv) state.target = null;
-          invaderPool.release(inv); damageHull(22); if (!state.running) return;
+          invaderPool.release(inv); damageHull(GAME_CONFIG.damage.invaderRamHull); if (!state.running) return;
         }
       }
 
@@ -1261,8 +1291,8 @@
 
       // --- Wave cleared ---
       if (state.toSpawn === 0 && invaderPool.active.length === 0) {
-        Sfx.waveClear(); addScore(150);
-        state.hull = Math.min(100, state.hull + 12); term("WAVE CLEARED — HULL REPAIRED");
+        Sfx.waveClear(); addScore(GAME_CONFIG.scoring.waveClear);
+        state.hull = Math.min(100, state.hull + GAME_CONFIG.upgrades.waveClearHullRepair); term("WAVE CLEARED — HULL REPAIRED");
         beginWave(state.wave + 1);
       }
     }
@@ -1312,7 +1342,7 @@
         ui.lockDist.textContent = Math.round(shipPos.distanceTo(state.target.position));
         // lead indicator
         const dist = shipPos.distanceTo(state.target.position);
-        tmpA.copy(state.target.userData.vel).multiplyScalar(dist / BULLET_SPEED).add(state.target.position);
+        tmpA.copy(state.target.userData.vel).multiplyScalar(dist / GAME_CONFIG.weapons.playerLaser.speed).add(state.target.position);
         const ls = worldToScreen(tmpA);
         if (ls.visible) { ui.lead.style.display = "block"; ui.lead.style.left = ls.x + "px"; ui.lead.style.top = ls.y + "px"; }
         else ui.lead.style.display = "none";
