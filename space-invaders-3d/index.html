@@ -166,6 +166,21 @@
     padding: 14px 38px; cursor: pointer; box-shadow: 0 0 24px rgba(125, 249, 255, 0.6);
     transition: transform 0.1s ease, box-shadow 0.2s ease;
   }
+  .overlay .secondary { background: transparent; color: var(--cyan); border: 1px solid rgba(125, 249, 255, 0.55); box-shadow: none; }
+  .overlay .button-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
+  .settings-grid {
+    width: min(680px, 92vw); display: grid; grid-template-columns: minmax(180px, 1fr) minmax(220px, 1.3fr);
+    gap: 14px 18px; align-items: center; text-align: left; color: #c8d8e8; padding: 18px;
+  }
+  .settings-grid label { letter-spacing: 2px; font-size: 13px; color: var(--cyan); }
+  .settings-grid input[type=range], .settings-grid select { width: 100%; }
+  .settings-grid select {
+    font-family: inherit; color: #e6f7ff; background: rgba(8, 20, 36, 0.95);
+    border: 1px solid rgba(125, 249, 255, 0.4); border-radius: 6px; padding: 8px;
+  }
+  .settings-grid input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--cyan); }
+  .settings-value { color: var(--amber); font-size: 12px; letter-spacing: 1px; margin-left: 8px; }
+  @media (max-width: 560px) { .settings-grid { grid-template-columns: 1fr; gap: 8px; } }
   .overlay button:hover:not(:disabled) { transform: scale(1.05); box-shadow: 0 0 36px rgba(125, 249, 255, 0.9); }
   .overlay button:disabled { opacity: 0.5; cursor: default; }
   #finalScore { color: var(--amber); }
@@ -274,12 +289,40 @@
       <span class="key">Space</span> / click fire &nbsp; <span class="key">C</span> toggle cockpit / chase<br /><br />
       On mobile: left stick steers, right buttons fire / boost / roll / view.
     </p>
-    <button id="startBtn" disabled>ESTABLISHING UPLINK&hellip;</button>
+    <div class="button-row">
+      <button id="startBtn" disabled>ESTABLISHING UPLINK&hellip;</button>
+      <button id="startSettingsBtn" class="secondary">SETTINGS</button>
+    </div>
   </div>
 
   <div id="pauseScreen" class="overlay hidden">
     <h2>PAUSED</h2>
     <p>Click to resume flight control.</p>
+    <button id="pauseSettingsBtn" class="secondary">SETTINGS</button>
+  </div>
+
+  <div id="settingsScreen" class="overlay hidden">
+    <h2>SETTINGS</h2>
+    <div class="settings-grid panel">
+      <label for="masterVolume">MASTER VOLUME <span id="masterVolumeVal" class="settings-value"></span></label>
+      <input id="masterVolume" type="range" min="0" max="100" step="1" />
+      <label for="sfxVolume">SFX VOLUME <span id="sfxVolumeVal" class="settings-value"></span></label>
+      <input id="sfxVolume" type="range" min="0" max="100" step="1" />
+      <label for="mouseSensitivity">MOUSE SENSITIVITY <span id="mouseSensitivityVal" class="settings-value"></span></label>
+      <input id="mouseSensitivity" type="range" min="25" max="200" step="5" />
+      <label for="invertY">INVERT Y</label>
+      <input id="invertY" type="checkbox" />
+      <label for="graphicsQuality">GRAPHICS QUALITY</label>
+      <select id="graphicsQuality"><option value="low">LOW</option><option value="medium">MEDIUM</option><option value="high">HIGH</option></select>
+      <label for="reducedMotion">REDUCED MOTION</label>
+      <input id="reducedMotion" type="checkbox" />
+      <label for="defaultCameraMode">DEFAULT CAMERA MODE</label>
+      <select id="defaultCameraMode"><option value="cockpit">COCKPIT</option><option value="chase">CHASE</option></select>
+    </div>
+    <div class="button-row">
+      <button id="closeSettingsBtn">BACK</button>
+      <button id="resetSettingsBtn" class="secondary">RESET</button>
+    </div>
   </div>
 
   <div id="gameOverScreen" class="overlay hidden">
@@ -287,7 +330,10 @@
     <h2>SCORE <span id="finalScore">0</span></h2>
     <h2 id="newHi" class="hidden">NEW HIGH SCORE!</h2>
     <p id="gameOverMsg"></p>
-    <button id="restartBtn">RE-DEPLOY</button>
+    <div class="button-row">
+      <button id="restartBtn">RE-DEPLOY</button>
+      <button id="gameOverSettingsBtn" class="secondary">SETTINGS</button>
+    </div>
   </div>
 
   <script type="importmap">
@@ -320,11 +366,29 @@
   const FOV_BASE = 70, FOV_BOOST = 84;
   const RADAR_RANGE = 280;
   const HISCORE_KEY = "starfall_defender_hiscore";
+  const SETTINGS_KEY = "starfall_defender_settings";
 
   const TEX_BASE = "https://unpkg.com/three@0.160.0/examples/textures/planets/";
   const LOW_FX = window.matchMedia("(pointer: coarse)").matches ||
                  (navigator.hardwareConcurrency || 8) <= 4;
   const IS_TOUCH = window.matchMedia("(pointer: coarse)").matches;
+  const DEFAULT_SETTINGS = {
+    masterVolume: 0.85, sfxVolume: 0.85, mouseSensitivity: 1, invertY: false,
+    graphicsQuality: "medium", reducedMotion: false, defaultCameraMode: "cockpit",
+  };
+  const QUALITY = {
+    low: { pixelRatio: 1, bloom: false },
+    medium: { pixelRatio: 1.5, bloom: !LOW_FX },
+    high: { pixelRatio: 2, bloom: true },
+  };
+  function loadSettings() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
+      return { ...DEFAULT_SETTINGS, ...saved };
+    } catch { return { ...DEFAULT_SETTINGS }; }
+  }
+  let settings = loadSettings();
+  function saveSettings() { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); }
 
   // Sun direction (world space) shared by light + planet shader
   const SUN_DIR = new THREE.Vector3(0.7, 0.35, 0.5).normalize();
@@ -334,7 +398,11 @@
   // ---------------------------------------------------------------------------
   const app = document.getElementById("app");
   const renderer = new THREE.WebGLRenderer({ antialias: !LOW_FX });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, LOW_FX ? 1.5 : 2));
+  function preferredPixelRatio() {
+    const q = QUALITY[settings.graphicsQuality] || QUALITY.medium;
+    return Math.min(window.devicePixelRatio, q.pixelRatio);
+  }
+  renderer.setPixelRatio(preferredPixelRatio());
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.05;
@@ -355,10 +423,11 @@
     0.5,                   // radius
     0.85                   // threshold
   );
-  const useBloom = !LOW_FX;
-  if (useBloom) {
-    composer.addPass(bloomPass);
-    composer.addPass(new OutputPass());
+  composer.addPass(bloomPass);
+  composer.addPass(new OutputPass());
+  function shouldUseBloom() {
+    const q = QUALITY[settings.graphicsQuality] || QUALITY.medium;
+    return q.bloom && !settings.reducedMotion;
   }
 
   // ---------------------------------------------------------------------------
@@ -765,8 +834,20 @@
   // Audio (synth SFX)
   // ---------------------------------------------------------------------------
   const Sfx = {
-    ctx: null,
-    init() { if (this.ctx) return; const AC = window.AudioContext || window.webkitAudioContext; if (AC) this.ctx = new AC(); },
+    ctx: null, master: null, sfx: null,
+    init() {
+      if (this.ctx) return;
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) {
+        this.ctx = new AC(); this.master = this.ctx.createGain(); this.sfx = this.ctx.createGain();
+        this.sfx.connect(this.master).connect(this.ctx.destination); this.applySettings();
+      }
+    },
+    applySettings() {
+      if (!this.ctx || !this.master || !this.sfx) return;
+      this.master.gain.setTargetAtTime(settings.masterVolume, this.ctx.currentTime, 0.01);
+      this.sfx.gain.setTargetAtTime(settings.sfxVolume, this.ctx.currentTime, 0.01);
+    },
     resume() { if (this.ctx && this.ctx.state === "suspended") this.ctx.resume(); },
     tone({ freq = 440, type = "square", dur = 0.12, gain = 0.16, slideTo = null }) {
       if (!this.ctx) return;
@@ -774,7 +855,7 @@
       osc.type = type; osc.frequency.setValueAtTime(freq, t);
       if (slideTo) osc.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
       g.gain.setValueAtTime(gain, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-      osc.connect(g).connect(this.ctx.destination); osc.start(t); osc.stop(t + dur);
+      osc.connect(g).connect(this.sfx || this.ctx.destination); osc.start(t); osc.stop(t + dur);
     },
     laser() { this.tone({ freq: 900, slideTo: 240, type: "square", dur: 0.10, gain: 0.07 }); },
     explosion() { this.tone({ freq: 200, slideTo: 45, type: "sawtooth", dur: 0.28, gain: 0.14 }); },
@@ -809,7 +890,7 @@
     hull: 100, shield: 100, integrity: 100,
     hiscore: Number(localStorage.getItem(HISCORE_KEY) || 0),
     fireCooldown: 0, shieldRegenTimer: 0, shake: 0,
-    cameraMode: "cockpit",
+    cameraMode: settings.defaultCameraMode,
     target: null, lockTimer: 0,
     toSpawn: 0, spawnTimer: 0, spawnInterval: 1.3, invSpeed: 14, hunterRatio: 0.5,
     enemyFireBudget: 0,
@@ -831,11 +912,63 @@
     radar: document.getElementById("radar"),
     terminal: document.getElementById("terminal"),
     startScreen: document.getElementById("startScreen"), pauseScreen: document.getElementById("pauseScreen"),
+    settingsScreen: document.getElementById("settingsScreen"),
     gameOverScreen: document.getElementById("gameOverScreen"), finalScore: document.getElementById("finalScore"),
     gameOverTitle: document.getElementById("gameOverTitle"), gameOverMsg: document.getElementById("gameOverMsg"),
     newHi: document.getElementById("newHi"),
   };
   const radarCtx = ui.radar.getContext("2d");
+  const settingsUi = {
+    masterVolume: document.getElementById("masterVolume"), masterVolumeVal: document.getElementById("masterVolumeVal"),
+    sfxVolume: document.getElementById("sfxVolume"), sfxVolumeVal: document.getElementById("sfxVolumeVal"),
+    mouseSensitivity: document.getElementById("mouseSensitivity"), mouseSensitivityVal: document.getElementById("mouseSensitivityVal"),
+    invertY: document.getElementById("invertY"), graphicsQuality: document.getElementById("graphicsQuality"),
+    reducedMotion: document.getElementById("reducedMotion"), defaultCameraMode: document.getElementById("defaultCameraMode"),
+  };
+  let settingsReturnOverlay = ui.startScreen;
+  function applySettings() {
+    renderer.setPixelRatio(preferredPixelRatio());
+    Sfx.applySettings();
+  }
+  function syncSettingsUi() {
+    settingsUi.masterVolume.value = Math.round(settings.masterVolume * 100);
+    settingsUi.masterVolumeVal.textContent = settingsUi.masterVolume.value + "%";
+    settingsUi.sfxVolume.value = Math.round(settings.sfxVolume * 100);
+    settingsUi.sfxVolumeVal.textContent = settingsUi.sfxVolume.value + "%";
+    settingsUi.mouseSensitivity.value = Math.round(settings.mouseSensitivity * 100);
+    settingsUi.mouseSensitivityVal.textContent = settings.mouseSensitivity.toFixed(2) + "x";
+    settingsUi.invertY.checked = settings.invertY;
+    settingsUi.graphicsQuality.value = settings.graphicsQuality;
+    settingsUi.reducedMotion.checked = settings.reducedMotion;
+    settingsUi.defaultCameraMode.value = settings.defaultCameraMode;
+  }
+  function updateSettingFromControl() {
+    settings.masterVolume = Number(settingsUi.masterVolume.value) / 100;
+    settings.sfxVolume = Number(settingsUi.sfxVolume.value) / 100;
+    settings.mouseSensitivity = Number(settingsUi.mouseSensitivity.value) / 100;
+    settings.invertY = settingsUi.invertY.checked;
+    settings.graphicsQuality = settingsUi.graphicsQuality.value;
+    settings.reducedMotion = settingsUi.reducedMotion.checked;
+    settings.defaultCameraMode = settingsUi.defaultCameraMode.value;
+    saveSettings(); syncSettingsUi(); applySettings();
+  }
+  function openSettings(from) {
+    settingsReturnOverlay = from || ui.startScreen; syncSettingsUi();
+    ui.startScreen.classList.add("hidden"); ui.pauseScreen.classList.add("hidden"); ui.gameOverScreen.classList.add("hidden");
+    ui.settingsScreen.classList.remove("hidden");
+  }
+  function closeSettings() {
+    ui.settingsScreen.classList.add("hidden");
+    if (settingsReturnOverlay) settingsReturnOverlay.classList.remove("hidden");
+  }
+  Object.values(settingsUi).forEach((el) => el.addEventListener("input", updateSettingFromControl));
+  document.getElementById("startSettingsBtn").addEventListener("click", () => openSettings(ui.startScreen));
+  document.getElementById("pauseSettingsBtn").addEventListener("click", (e) => { e.stopPropagation(); openSettings(ui.pauseScreen); });
+  document.getElementById("gameOverSettingsBtn").addEventListener("click", () => openSettings(ui.gameOverScreen));
+  document.getElementById("closeSettingsBtn").addEventListener("click", closeSettings);
+  document.getElementById("resetSettingsBtn").addEventListener("click", () => { settings = { ...DEFAULT_SETTINGS }; saveSettings(); syncSettingsUi(); applySettings(); });
+  ui.settingsScreen.addEventListener("click", (e) => e.stopPropagation());
+  syncSettingsUi(); applySettings();
 
   const termLines = [];
   function term(msg) {
@@ -976,7 +1109,8 @@
     window.addEventListener("mouseup", (e) => { if (e.button === 0) mouseFire = false; });
     document.addEventListener("mousemove", (e) => {
       if (document.pointerLockElement === canvas) {
-        mouseAim.x += e.movementX * 0.06; mouseAim.y += e.movementY * 0.06;
+        mouseAim.x += e.movementX * 0.06 * settings.mouseSensitivity;
+        mouseAim.y += e.movementY * 0.06 * settings.mouseSensitivity * (settings.invertY ? -1 : 1);
         mouseAim.x = clamp(mouseAim.x, -1.5, 1.5); mouseAim.y = clamp(mouseAim.y, -1.5, 1.5);
       }
     });
@@ -1052,13 +1186,16 @@
     controlAxes.throttle = 0.6;
     shipPos.set(0, 0, 60); shipVel.set(0, 0, 0);
     shipQuat.identity(); mouseAim.x = 0; mouseAim.y = 0;
+    state.cameraMode = settings.defaultCameraMode;
+    ui.viewMode.textContent = state.cameraMode.toUpperCase();
+    player.visible = state.cameraMode === "chase";
     player.position.copy(shipPos); player.quaternion.copy(shipQuat);
 
     invaderPool.releaseAll(); playerBullets.releaseAll(); enemyBullets.releaseAll(); particlePool.releaseAll();
     spawnAsteroidField();
     termLines.length = 0; term("SYSTEMS ONLINE"); term("DEFEND THE HOMEWORLD");
     beginWave(1); syncHud();
-    ui.startScreen.classList.add("hidden"); ui.gameOverScreen.classList.add("hidden"); ui.pauseScreen.classList.add("hidden");
+    ui.startScreen.classList.add("hidden"); ui.gameOverScreen.classList.add("hidden"); ui.pauseScreen.classList.add("hidden"); ui.settingsScreen.classList.add("hidden");
     if (!IS_TOUCH) canvas.requestPointerLock();
   }
   function endGame(title, msg) {
@@ -1294,8 +1431,9 @@
     }
     if (state.shake > 0) {
       state.shake = Math.max(0, state.shake - dt * 2.2);
-      camera.position.x += (Math.random() - 0.5) * state.shake;
-      camera.position.y += (Math.random() - 0.5) * state.shake;
+      const shakeScale = settings.reducedMotion ? 0.15 : 1;
+      camera.position.x += (Math.random() - 0.5) * state.shake * shakeScale;
+      camera.position.y += (Math.random() - 0.5) * state.shake * shakeScale;
     }
 
     // --- HUD overlays ---
@@ -1358,7 +1496,7 @@
     update(dt, clock.elapsedTime);
 
     renderer.clear();
-    if (useBloom) composer.render(); else renderer.render(scene, camera);
+    if (shouldUseBloom()) composer.render(); else renderer.render(scene, camera);
     if (state.cameraMode === "cockpit") {
       cockpitCam.fov = camera.fov; cockpitCam.updateProjectionMatrix();
       renderer.clearDepth();
@@ -1383,6 +1521,7 @@
     const w = window.innerWidth, h = window.innerHeight;
     camera.aspect = w / h; camera.updateProjectionMatrix();
     cockpitCam.aspect = w / h; cockpitCam.updateProjectionMatrix();
+    renderer.setPixelRatio(preferredPixelRatio());
     renderer.setSize(w, h); composer.setSize(w, h); bloomPass.setSize(w, h);
   });
   </script>
