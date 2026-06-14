@@ -353,6 +353,7 @@
   const BOOST_RECOVER = 38;        // energy needed to clear overheat
   const PITCH_RATE = 1.7, YAW_RATE = 1.4, ROLL_RATE = 2.6;  // rad/s at full input
   const BULLET_SPEED = 170, BULLET_RANGE = 320, FIRE_CD = 0.13;
+  const PLAYER_BULLET_DAMAGE = 1;
   const ENEMY_BULLET_SPEED = 75, ENEMY_BULLET_RANGE = 260;
   const FOV_BASE = 70, FOV_BOOST = 84;
   const RADAR_RANGE = 280;
@@ -798,6 +799,16 @@
   const invaderGeo = new THREE.IcosahedronGeometry(1.0, 0);
   const invaderRingGeo = new THREE.TorusGeometry(1.15, 0.16, 8, 20);
   const invaderEyeGeo = new THREE.SphereGeometry(0.26, 12, 12);
+  const INVADER_ROLES = {
+    drifter: { hp: 1, color: 0xff2d3a },
+    hunter: { hp: 2, color: 0xff2d3a },
+    bomber: { hp: 3, color: 0xff8c1a },
+    elite: { hp: 6, color: 0xb388ff },
+    miniboss: { hp: 10, color: 0x7df9ff },
+  };
+  const INVADER_HIT_FLASH_TIME = 0.08;
+  const INVADER_BASE_EMISSIVE_INTENSITY = 1.4;
+  const INVADER_FLASH_EMISSIVE_INTENSITY = 3.0;
   function makeInvaderMesh() {
     const group = new THREE.Group();
     const core = new THREE.Mesh(invaderGeo, new THREE.MeshStandardMaterial({
@@ -1057,16 +1068,21 @@
     inv.userData.vel = new THREE.Vector3();
     inv.userData.speed = state.invSpeed * (0.85 + Math.random() * 0.4);
     inv.userData.fireTimer = 1 + Math.random() * 2;
-    inv.userData.hp = 1;
     const r = Math.random();
     const spawnBoss = state.wave > 0 && state.wave % 5 === 0 && !state.bossSpawned;
     inv.userData.role = spawnBoss ? "boss" : r < state.hunterRatio ? "hunter" : r < state.hunterRatio + 0.25 ? "bomber" : "drifter";
-    if (spawnBoss) { state.bossSpawned = true; inv.userData.hp = 5 + Math.floor(state.wave / 5); }
+    if (spawnBoss) state.bossSpawned = true;
+    const roleConfig = INVADER_ROLES[inv.userData.role] || INVADER_ROLES.drifter;
+    // boss keeps its dynamic HP / purple; other roles use the role table
+    inv.userData.hp = spawnBoss ? (5 + Math.floor(state.wave / 5)) : roleConfig.hp;
+    inv.userData.maxHp = inv.userData.hp;
+    inv.userData.baseColor = spawnBoss ? 0xb388ff : roleConfig.color;
+    inv.userData.hitFlashTimer = 0;
     inv.userData.spin = (Math.random() - 0.5) * 2;
-    inv.scale.setScalar(inv.userData.role === "boss" ? 2.4 : 1);
-    if (inv.userData.role === "bomber") inv.userData.core.material.color.set(0xff8c1a), inv.userData.core.material.emissive.set(0xff8c1a);
-    else if (inv.userData.role === "boss") inv.userData.core.material.color.set(0xb388ff), inv.userData.core.material.emissive.set(0xb388ff);
-    else inv.userData.core.material.color.set(0xff2d3a), inv.userData.core.material.emissive.set(0xff2d3a);
+    inv.scale.setScalar(spawnBoss ? 2.4 : 1);
+    inv.userData.core.material.color.set(inv.userData.baseColor);
+    inv.userData.core.material.emissive.set(inv.userData.baseColor);
+    inv.userData.core.material.emissiveIntensity = INVADER_BASE_EMISSIVE_INTENSITY;
   }
 
   // ---------------------------------------------------------------------------
@@ -1316,6 +1332,14 @@
       for (let i = invaderPool.active.length - 1; i >= 0; i--) {
         const inv = invaderPool.active[i];
         const ud = inv.userData;
+        if (ud.hitFlashTimer > 0) {
+          ud.hitFlashTimer = Math.max(0, ud.hitFlashTimer - dt);
+          if (ud.hitFlashTimer === 0) {
+            ud.core.material.color.set(ud.baseColor);
+            ud.core.material.emissive.set(ud.baseColor);
+            ud.core.material.emissiveIntensity = INVADER_BASE_EMISSIVE_INTENSITY;
+          }
+        }
         let desired;
         if (ud.role === "bomber") {
           desired = tmpA.copy(planetWorld).sub(inv.position).normalize();
@@ -1361,14 +1385,19 @@
         let hit = false;
         for (let j = invaderPool.active.length - 1; j >= 0; j--) {
           const inv = invaderPool.active[j];
-          const hitRadius = inv.userData.role === "boss" ? 5.2 : 2.2;
+          const role = inv.userData.role;
+          const hitRadius = role === "boss" ? 5.2 : 2.2;
           if (b.position.distanceToSquared(inv.position) < hitRadius * hitRadius) {
-            const role = inv.userData.role;
-            inv.userData.hp = (inv.userData.hp || 1) - 1;
-            spawnExplosion(inv.position, inv.userData.core.material.color.getHex(), role === "boss" ? 22 : 16);
-            Sfx.explosion();
+            inv.userData.hp -= (b.userData.damage || PLAYER_BULLET_DAMAGE);
+            // brief white hit-flash
+            inv.userData.hitFlashTimer = INVADER_HIT_FLASH_TIME;
+            inv.userData.core.material.color.set(0xffffff);
+            inv.userData.core.material.emissive.set(0xffffff);
+            inv.userData.core.material.emissiveIntensity = INVADER_FLASH_EMISSIVE_INTENSITY;
             hit = true;
             if (inv.userData.hp <= 0) {
+              spawnExplosion(inv.position, inv.userData.baseColor, role === "boss" ? 22 : 16);
+              Sfx.explosion();
               const points = role === "bomber" ? 75 : role === "boss" ? 300 : role === "hunter" ? 50 : 30;
               addScore(points, inv.position, "#ffd166");
               profile.totalKills++;
@@ -1378,7 +1407,8 @@
               if (state.target === inv) state.target = null;
               invaderPool.release(inv);
             } else {
-              scorePopup(inv.position, "ARMOR " + inv.userData.hp, "#b388ff");
+              spawnExplosion(inv.position, inv.userData.baseColor, 5);
+              if (inv.userData.maxHp > 1) scorePopup(inv.position, "ARMOR " + inv.userData.hp, "#b388ff");
             }
             break;
           }
