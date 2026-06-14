@@ -158,12 +158,39 @@
     z-index: 12; pointer-events: none; opacity: 0;
   }
   #toast.show { animation: toastPulse 1.8s ease-out forwards; }
+  #captions {
+    position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%);
+    max-width: min(720px, calc(100vw - 32px)); padding: 10px 16px;
+    font-family: "Courier New", monospace; font-size: 16px; line-height: 1.4;
+    color: #fff; background: rgba(0, 0, 0, 0.78); border: 1px solid rgba(255, 255, 255, 0.65);
+    border-radius: 8px; z-index: 14; pointer-events: none; opacity: 0;
+    transition: opacity 0.16s ease; text-align: center; letter-spacing: 1px;
+  }
+  #captions.show { opacity: 1; }
   @keyframes toastPulse {
     0% { opacity: 0; transform: translate(-50%, -50%) scale(0.8); }
     15% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
     80% { opacity: 1; }
     100% { opacity: 0; transform: translate(-50%, -50%) scale(1.05); }
   }
+
+  body.high-contrast-hud .panel { background: #000; border-color: #fff; box-shadow: none; backdrop-filter: none; }
+  body.high-contrast-hud .hud, body.high-contrast-hud #topbar, body.high-contrast-hud #flightinfo,
+  body.high-contrast-hud #terminal, body.high-contrast-hud #radarPanel .cap, body.high-contrast-hud #systems .cap {
+    color: #fff; text-shadow: none;
+  }
+  body.high-contrast-hud #hiscore, body.high-contrast-hud #lockbox .dist, body.high-contrast-hud .popup { color: #ff0; text-shadow: none; }
+  body.high-contrast-hud #lockbox .corner { border-color: #fff; filter: none; }
+  body.high-contrast-hud #aim, body.high-contrast-hud #lead { border-color: #fff; box-shadow: none; }
+  body.high-contrast-hud #aim::before, body.high-contrast-hud #aim::after { background: #fff; }
+  body.high-contrast-hud .bar .lbl { color: #fff; }
+  body.large-hud-text #topbar { font-size: 23px; }
+  body.large-hud-text #flightinfo { font-size: 16px; }
+  body.large-hud-text #terminal { font-size: 15px; max-width: 420px; }
+  body.large-hud-text #systems .cap, body.large-hud-text #radarPanel .cap { font-size: 13px; }
+  body.large-hud-text .bar .lbl { font-size: 14px; }
+  body.large-hud-text #lockbox .label { font-size: 14px; }
+  body.large-hud-text #lockbox .dist { font-size: 16px; }
 
   /* Overlays */
   .overlay {
@@ -219,6 +246,14 @@
   }
   .overlay button:hover:not(:disabled) { transform: scale(1.05); box-shadow: 0 0 36px rgba(125, 249, 255, 0.9); }
   .overlay button:disabled { opacity: 0.5; cursor: default; }
+  .settingsPanel {
+    width: min(720px, 100%); display: grid; grid-template-columns: repeat(2, minmax(240px, 1fr));
+    gap: 8px 18px; padding: 14px 16px; text-align: left;
+  }
+  .settingsPanel legend { grid-column: 1 / -1; color: var(--cyan); letter-spacing: 2px; margin-bottom: 4px; }
+  .settingsPanel label { display: flex; align-items: center; gap: 10px; color: #d8efff; font-size: 13px; line-height: 1.35; }
+  .settingsPanel input { width: 18px; height: 18px; accent-color: var(--cyan); flex: 0 0 auto; }
+  @media (max-width: 620px) { .settingsPanel { grid-template-columns: 1fr; } }
   #finalScore { color: var(--amber); }
   #newHi { color: var(--green); text-shadow: 0 0 12px rgba(57, 255, 140, 0.8); }
   #newHi.hidden { display: none; }
@@ -314,6 +349,7 @@
 
   <div id="popups"></div>
   <div id="toast"></div>
+  <div id="captions" role="status" aria-live="polite"></div>
 
   <!-- Touch controls -------------------------------------------------- -->
   <div id="touch">
@@ -361,6 +397,15 @@
       <label>Joystick <select id="touchStickModeSetting"><option value="fixed">Fixed</option><option value="floating">Floating</option></select></label>
       <label>Auto-fire <input id="touchAutoFireSetting" type="checkbox" /></label>
     </div>
+    <fieldset class="settingsPanel panel" aria-label="Accessibility settings">
+      <legend>ACCESSIBILITY SETTINGS</legend>
+      <label><input type="checkbox" data-setting="reducedShake" /> Reduced camera shake</label>
+      <label><input type="checkbox" data-setting="disableBloom" /> Disable bloom / high flash effects</label>
+      <label><input type="checkbox" data-setting="highContrastHud" /> High-contrast HUD mode</label>
+      <label><input type="checkbox" data-setting="colorblindPalette" /> Colorblind-safe enemy palette</label>
+      <label><input type="checkbox" data-setting="largeHudText" /> Larger HUD text</label>
+      <label><input type="checkbox" data-setting="captions" /> Text captions for audio warnings</label>
+    </fieldset>
     <button id="startBtn" disabled>ESTABLISHING UPLINK&hellip;</button>
   </div>
 
@@ -443,12 +488,20 @@
     touchLeftHanded: false,
     touchJoystickMode: "fixed",
     touchAutoFire: false,
+    reducedShake: false,
+    disableBloom: false,
+    highContrastHud: false,
+    colorblindPalette: false,
+    largeHudText: false,
+    captions: false,
   };
   function loadSettings() {
     try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}"); }
     catch { return {}; }
   }
   const settings = { ...defaultSettings, ...loadSettings() };
+  const ENEMY_COLORS_DEFAULT = { hunter: 0xff2d3a, bomber: 0xff8c1a, bullet: 0xff5d73 };
+  const ENEMY_COLORS_CB = { hunter: 0x0072b2, bomber: 0xe69f00, bullet: 0xcc79a7 };
 
   const TEX_BASE = "https://unpkg.com/three@0.160.0/examples/textures/planets/";
   const LOW_FX = window.matchMedia("(pointer: coarse)").matches ||
@@ -525,6 +578,32 @@
   const SUN_DIR = new THREE.Vector3(0.7, 0.35, 0.5).normalize();
 
   // ---------------------------------------------------------------------------
+  // Accessibility settings
+  // ---------------------------------------------------------------------------
+  const ACCESS_KEY = "starfall_defender_accessibility";
+  const defaultAccessibility = {
+    reducedShake: false, disableBloom: false, highContrastHud: false,
+    colorblindPalette: false, largeHudText: false, captions: false,
+  };
+  const accessibility = { ...defaultAccessibility };
+  try {
+    Object.assign(accessibility, JSON.parse(localStorage.getItem(ACCESS_KEY) || "{}"));
+  } catch {
+    localStorage.removeItem(SETTINGS_KEY);
+  }
+  function enemyColors() { return accessibility.colorblindPalette ? ENEMY_COLORS_CB : ENEMY_COLORS_DEFAULT; }
+  function applyAccessibilitySettings() {
+    document.body.classList.toggle("reduced-camera-shake", accessibility.reducedShake);
+    document.body.classList.toggle("no-bloom-flash", accessibility.disableBloom);
+    document.body.classList.toggle("high-contrast-hud", accessibility.highContrastHud);
+    document.body.classList.toggle("colorblind-enemies", accessibility.colorblindPalette);
+    document.body.classList.toggle("large-hud-text", accessibility.largeHudText);
+    document.body.classList.toggle("audio-captions", accessibility.captions);
+    localStorage.setItem(ACCESS_KEY, JSON.stringify(accessibility));
+  }
+  applyAccessibilitySettings();
+
+  // ---------------------------------------------------------------------------
   // Renderer + post-processing
   // ---------------------------------------------------------------------------
   const app = document.getElementById("app");
@@ -550,8 +629,8 @@
     0.5,                   // radius
     0.85                   // threshold
   );
-  const useBloom = !LOW_FX;
-  if (useBloom) {
+  const baseBloom = !LOW_FX;
+  if (baseBloom) {
     composer.addPass(bloomPass);
     composer.addPass(new OutputPass());
   }
@@ -875,7 +954,8 @@
     spr.position.copy(SUN_DIR).multiplyScalar(1600);
     return spr;
   }
-  scene.add(makeSunFlare());
+  const sunFlare = makeSunFlare();
+  scene.add(sunFlare);
 
   function loadAssets() {
     const mgr = new THREE.LoadingManager();
@@ -1027,7 +1107,7 @@
   const playerBulletGeo = new THREE.CapsuleGeometry(0.12, 1.4, 4, 8);
   const playerBulletMat = new THREE.MeshBasicMaterial({ color: 0x9dffb0 });
   const enemyBulletGeo = new THREE.SphereGeometry(0.34, 10, 10);
-  const enemyBulletMat = new THREE.MeshBasicMaterial({ color: 0xff5d73 });
+  const enemyBulletMat = new THREE.MeshBasicMaterial({ color: enemyColors().bullet });
   const allyBulletGeo = new THREE.SphereGeometry(0.2, 8, 8);
   const allyBulletMat = new THREE.MeshBasicMaterial({ color: 0x7df9ff });
   const particleGeo = new THREE.SphereGeometry(0.18, 6, 6);
@@ -1258,6 +1338,7 @@
 
   function spawnExplosion(pos, color, n) {
     n = n || 14;
+    if (accessibility.disableBloom) n = Math.max(4, Math.ceil(n * 0.45));
     for (let i = 0; i < n; i++) {
       const m = particlePool.acquire();
       m.material.color.set(color); m.material.opacity = 1;
@@ -1430,7 +1511,7 @@
     lockbox: document.getElementById("lockbox"), lockDist: document.querySelector("#lockbox .dist"),
     lead: document.getElementById("lead"), reticle: document.getElementById("aim"),
     radar: document.getElementById("radar"),
-    terminal: document.getElementById("terminal"),
+    terminal: document.getElementById("terminal"), captions: document.getElementById("captions"),
     startScreen: document.getElementById("startScreen"), pauseScreen: document.getElementById("pauseScreen"),
     gameOverScreen: document.getElementById("gameOverScreen"), finalScore: document.getElementById("finalScore"),
     gameOverTitle: document.getElementById("gameOverTitle"), gameOverMsg: document.getElementById("gameOverMsg"),
@@ -1488,6 +1569,32 @@
 
   applyTouchSettings();
   bindTouchSettingsUi();
+
+  document.querySelectorAll("[data-setting]").forEach((input) => {
+    input.checked = !!accessibility[input.dataset.setting];
+    input.addEventListener("change", () => {
+      accessibility[input.dataset.setting] = input.checked;
+      applyAccessibilitySettings();
+      updateVisualAccessibility();
+    });
+  });
+
+  function updateVisualAccessibility() {
+    const colors = enemyColors();
+    enemyBulletMat.color.setHex(colors.bullet);
+    if (bloomPass) bloomPass.strength = accessibility.disableBloom ? 0 : (LOW_FX ? 0.7 : 0.95);
+    renderer.toneMappingExposure = accessibility.disableBloom ? 0.9 : 1.05;
+    if (sunFlare) sunFlare.visible = !accessibility.disableBloom;
+    for (const inv of invaderPool.active) setInvaderPalette(inv);
+  }
+  function caption(text) {
+    if (!accessibility.captions || !text) return;
+    ui.captions.textContent = text;
+    ui.captions.classList.add("show");
+    clearTimeout(ui.captions._timer);
+    ui.captions._timer = setTimeout(() => ui.captions.classList.remove("show"), 2200);
+  }
+
 
   const termLines = [];
   function term(msg) {
@@ -1626,6 +1733,7 @@
     if (a > 0) state.hull -= a;
     state.waveTookDamage = true;
     state.invulnerableTimer = PLAYER_INVULN_DURATION;
+    caption("Warning: fighter hit. Hull " + Math.max(0, Math.round(state.hull)) + " percent, shield " + Math.max(0, Math.round(state.shield)) + " percent.");
     state.shieldRegenTimer = 4;
     state.shake = Math.max(state.shake, 1.0);
     state.cockpitShake = Math.max(state.cockpitShake, 0.45);
@@ -1656,6 +1764,7 @@
     state.cockpitShake = Math.max(state.cockpitShake, 0.25);
     state.planetFlash = 1.0; state.cityFlicker = 1.4; state.defensePulse = 1.0;
     Sfx.impact();
+    caption("Warning: homeworld impact. Planet integrity " + Math.round(state.integrity) + " percent.");
 
     const surfacePos = impactPos ? impactPos.clone() : planetGroup.position.clone();
     if (impactPos) addPlanetDamageMark(surfacePos);
@@ -1801,7 +1910,18 @@
     state.invSpeed = 13 + (n - 1) * 1.6;
     state.hunterRatio = Math.min(0.85, 0.45 + (n - 1) * 0.06);
     state.combo = 1; state.comboTimer = 0; state.waveDamageTaken = false;
-    syncHud(); toast("WAVE " + n); term("WAVE " + n + " INBOUND"); term("OBJECTIVE — " + state.objective.text);
+    syncHud(); toast("WAVE " + n); caption("Alert: wave " + n + " inbound."); term("WAVE " + n + " INBOUND"); term("OBJECTIVE — " + state.objective.text);
+  }
+
+  function setInvaderPalette(inv) {
+    const colors = enemyColors();
+    const coreColor = (inv.userData.role === "boss" || inv.userData.role === "elite") ? inv.userData.baseColor
+      : inv.userData.role === "bomber" ? colors.bomber
+      : colors.hunter;
+    inv.userData.core.material.color.setHex(coreColor);
+    inv.userData.core.material.emissive.setHex(coreColor);
+    inv.userData.core.material.emissiveIntensity = accessibility.disableBloom ? 0.45 : 1.4;
+    inv.userData.ring.material.emissiveIntensity = accessibility.disableBloom ? 0.15 : 1;
   }
 
   function spawnInvader() {
@@ -1849,6 +1969,7 @@
     inv.userData.core.material.emissive.set(inv.userData.baseColor);
     inv.userData.core.material.emissiveIntensity = INVADER_BASE_EMISSIVE_INTENSITY;
     inv.userData.ring.material.emissive.set(0x330008);
+    if (accessibility.colorblindPalette || accessibility.disableBloom) setInvaderPalette(inv);
   }
 
   // ---------------------------------------------------------------------------
@@ -2078,7 +2199,7 @@
       const d = tmpA.dot(forward);
       if (d > bestDot) { bestDot = d; best = inv; }
     }
-    if (best !== state.target) { state.target = best; if (best) Sfx.lock(); }
+    if (best !== state.target) { state.target = best; if (best) { Sfx.lock(); caption("Target lock acquired."); } }
   }
 
   // ---------------------------------------------------------------------------
@@ -2580,8 +2701,9 @@
     }
     if (state.shake > 0) {
       state.shake = Math.max(0, state.shake - dt * 2.2);
-      camera.position.x += (Math.random() - 0.5) * state.shake;
-      camera.position.y += (Math.random() - 0.5) * state.shake;
+      const shakeScale = accessibility.reducedShake ? 0.25 : 1;
+      camera.position.x += (Math.random() - 0.5) * state.shake * shakeScale;
+      camera.position.y += (Math.random() - 0.5) * state.shake * shakeScale;
     }
 
     const cp = cockpit.userData;
@@ -2633,7 +2755,8 @@
       const py = cy - (-tmpA.z / RADAR_RANGE) * rad; // forward(-z) -> up
       ctx.fillStyle = color; ctx.fillRect(px - 1.5, py - 1.5, 3, 3);
     };
-    for (const inv of invaderPool.active) plot(inv.position, inv.userData.role === "boss" ? "#b388ff" : inv.userData.role === "bomber" ? "#ff8c1a" : "#ff3340");
+    const radarEnemy = enemyColors();
+    for (const inv of invaderPool.active) plot(inv.position, (inv.userData.role === "boss" || inv.userData.role === "elite") ? "#b388ff" : inv.userData.role === "bomber" ? `#${radarEnemy.bomber.toString(16).padStart(6, "0")}` : `#${radarEnemy.hunter.toString(16).padStart(6, "0")}`);
     for (const ally of state.allies) {
       if (ally.userData.status !== "destroyed") plot(ally.getWorldPosition(tmpB), ally.userData.status === "disabled" ? "#ffd166" : "#7df9ff");
     }
@@ -2659,7 +2782,7 @@
     update(dt, clock.elapsedTime);
 
     renderer.clear();
-    if (useBloom) composer.render(); else renderer.render(scene, camera);
+    if (baseBloom && !accessibility.disableBloom) composer.render(); else renderer.render(scene, camera);
     if (state.cameraMode === "cockpit") {
       cockpitCam.fov = camera.fov; cockpitCam.updateProjectionMatrix();
       renderer.clearDepth();
@@ -2673,6 +2796,7 @@
   camera.position.set(0, 6, 90);
   camera.lookAt(planetGroup.position);
   player.visible = false;
+  updateVisualAccessibility();
   syncHud();
   loadAssets();
   animate();
