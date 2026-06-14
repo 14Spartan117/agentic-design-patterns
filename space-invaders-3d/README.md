@@ -13,7 +13,7 @@ retro green status terminal.
 
 ## Play
 
-It's a single self-contained file — no build step required.
+It's a static ES-module app — no build step required.
 
 ```bash
 # from the repo root
@@ -77,7 +77,7 @@ pauses and shows a click-to-resume prompt).
 
 ## How it works
 
-Everything lives in `index.html`:
+The game keeps markup and styles in `index.html`, with JavaScript split into `src/` modules:
 
 - **Rendering** — Three.js `WebGLRenderer` with ACES tone mapping and an `EffectComposer`
   bloom chain (`UnrealBloomPass` + `OutputPass`, loaded from the same unpkg CDN via the
