@@ -209,6 +209,7 @@
     <div>SCORE <span id="score">0</span></div>
     <div id="hiscore">HI <span id="hiscoreVal">0</span></div>
     <div>WAVE <span id="wave">1</span></div>
+    <div>OBJ <span id="objective">CLEAR ALL</span></div>
   </div>
 
   <div id="flightinfo" class="hud">
@@ -806,6 +807,7 @@
   const state = {
     running: false, paused: false,
     score: 0, wave: 1,
+    objective: null,
     hull: 100, shield: 100, integrity: 100,
     hiscore: Number(localStorage.getItem(HISCORE_KEY) || 0),
     fireCooldown: 0, shieldRegenTimer: 0, shake: 0,
@@ -819,7 +821,7 @@
   // HUD references
   // ---------------------------------------------------------------------------
   const ui = {
-    score: document.getElementById("score"), hiscore: document.getElementById("hiscoreVal"), wave: document.getElementById("wave"),
+    score: document.getElementById("score"), hiscore: document.getElementById("hiscoreVal"), wave: document.getElementById("wave"), objective: document.getElementById("objective"),
     thr: document.getElementById("thr"), viewMode: document.getElementById("viewMode"),
     hullVal: document.getElementById("hullVal"), hullFill: document.getElementById("hullFill"),
     shieldVal: document.getElementById("shieldVal"), shieldFill: document.getElementById("shieldFill"),
@@ -867,6 +869,7 @@
   }
   function syncHud() {
     ui.score.textContent = state.score; ui.hiscore.textContent = state.hiscore; ui.wave.textContent = state.wave;
+    if (state.objective) ui.objective.textContent = objectiveStatusText();
     ui.thr.textContent = Math.round(controlAxes.throttle * 100);
     ui.hullVal.textContent = Math.round(state.hull); ui.hullFill.style.width = clamp(state.hull, 0, 100) + "%";
     ui.shieldVal.textContent = Math.round(state.shield); ui.shieldFill.style.width = clamp(state.shield, 0, 100) + "%";
@@ -905,14 +908,74 @@
   // ---------------------------------------------------------------------------
   // Waves
   // ---------------------------------------------------------------------------
+  const OBJECTIVE_TYPES = ["clear_all", "protect_satellite", "intercept_bombers", "destroy_elite", "survive_timer"];
+
+  function selectObjective(n) {
+    const type = OBJECTIVE_TYPES[(n - 1) % OBJECTIVE_TYPES.length];
+    const objective = { type, elapsed: 0, text: "", target: 0, progress: 0, satellite: null, satelliteHealth: 100 };
+    if (type === "clear_all") {
+      objective.text = "CLEAR ALL HOSTILES";
+    } else if (type === "protect_satellite") {
+      objective.satellite = satellites[(n - 1) % Math.max(1, satellites.length)] || null;
+      objective.text = "PROTECT ORBITAL SATELLITE";
+    } else if (type === "intercept_bombers") {
+      objective.target = Math.max(2, Math.min(6, 1 + Math.ceil(n * 0.6)));
+      objective.text = "INTERCEPT " + objective.target + " BOMBERS";
+    } else if (type === "destroy_elite") {
+      objective.target = 1;
+      objective.text = "DESTROY THE ELITE RAIDER";
+    } else if (type === "survive_timer") {
+      objective.target = 28 + n * 4;
+      objective.text = "SURVIVE " + objective.target + " SECONDS";
+    }
+    return objective;
+  }
+
+  function objectiveStatusText() {
+    const o = state.objective;
+    if (!o) return "CLEAR ALL";
+    if (o.type === "intercept_bombers") return "BOMBERS " + o.progress + "/" + o.target;
+    if (o.type === "destroy_elite") return o.progress >= o.target ? "ELITE DOWN" : "ELITE ACTIVE";
+    if (o.type === "survive_timer") return "SURVIVE " + Math.max(0, Math.ceil(o.target - o.elapsed)) + "S";
+    if (o.type === "protect_satellite") return "SAT " + Math.max(0, Math.ceil(o.satelliteHealth)) + "%";
+    return o.text;
+  }
+
+  function isObjectiveComplete() {
+    const o = state.objective;
+    if (!o) return state.toSpawn === 0 && invaderPool.active.length === 0;
+    if (o.type === "intercept_bombers") return o.progress >= o.target && state.toSpawn === 0 && !invaderPool.active.some((inv) => inv.userData.role === "bomber");
+    if (o.type === "destroy_elite") return o.progress >= o.target;
+    if (o.type === "survive_timer") return o.elapsed >= o.target;
+    return state.toSpawn === 0 && invaderPool.active.length === 0;
+  }
+
+  function updateObjective(dt) {
+    const o = state.objective;
+    if (!o) return;
+    o.elapsed += dt;
+    if (o.type !== "protect_satellite" || !o.satellite) return;
+
+    const satWorld = o.satellite.getWorldPosition(tmpB);
+    for (const inv of invaderPool.active) {
+      if (inv.position.distanceToSquared(satWorld) < 18 * 18) {
+        o.satelliteHealth -= dt * (inv.userData.role === "bomber" ? 18 : 8);
+      }
+    }
+    if (o.satelliteHealth <= 0) endGame("SATELLITE LOST", "The orbital relay was destroyed under your watch.");
+  }
+
   function beginWave(n) {
     state.wave = n;
+    state.objective = selectObjective(n);
     state.toSpawn = 4 + n * 2;
+    if (state.objective.type === "intercept_bombers") state.toSpawn = Math.max(state.toSpawn, state.objective.target + 3);
+    if (state.objective.type === "destroy_elite") state.toSpawn = Math.max(state.toSpawn, 5);
     state.spawnTimer = 0.6;
     state.spawnInterval = Math.max(0.4, 1.4 - (n - 1) * 0.1);
     state.invSpeed = 13 + (n - 1) * 1.6;
     state.hunterRatio = Math.min(0.85, 0.45 + (n - 1) * 0.06);
-    syncHud(); toast("WAVE " + n); term("WAVE " + n + " INBOUND");
+    syncHud(); toast("WAVE " + n); term("WAVE " + n + " INBOUND"); term("OBJECTIVE — " + state.objective.text);
   }
 
   function spawnInvader() {
@@ -931,9 +994,20 @@
     inv.userData.fireTimer = 1 + Math.random() * 2;
     inv.userData.hp = 1;
     const r = Math.random();
-    inv.userData.role = r < state.hunterRatio ? "hunter" : r < state.hunterRatio + 0.25 ? "bomber" : "drifter";
+    const o = state.objective;
+    if (o && o.type === "destroy_elite" && o.progress === 0 && !invaderPool.active.some((active) => active.userData.role === "elite")) {
+      inv.userData.role = "elite";
+      inv.userData.hp = 4 + Math.floor(state.wave / 3);
+      inv.userData.speed *= 0.75;
+    } else if (o && o.type === "intercept_bombers" && o.progress < o.target) {
+      inv.userData.role = "bomber";
+    } else {
+      inv.userData.role = r < state.hunterRatio ? "hunter" : r < state.hunterRatio + 0.25 ? "bomber" : "drifter";
+    }
     inv.userData.spin = (Math.random() - 0.5) * 2;
-    if (inv.userData.role === "bomber") inv.userData.core.material.color.set(0xff8c1a), inv.userData.core.material.emissive.set(0xff8c1a);
+    inv.scale.setScalar(inv.userData.role === "elite" ? 1.9 : 1);
+    if (inv.userData.role === "elite") inv.userData.core.material.color.set(0xb388ff), inv.userData.core.material.emissive.set(0xb388ff);
+    else if (inv.userData.role === "bomber") inv.userData.core.material.color.set(0xff8c1a), inv.userData.core.material.emissive.set(0xff8c1a);
     else inv.userData.core.material.color.set(0xff2d3a), inv.userData.core.material.emissive.set(0xff2d3a);
   }
 
@@ -1149,6 +1223,9 @@
       if (state.shieldRegenTimer > 0) state.shieldRegenTimer -= dt;
       else if (state.shield < 100) { state.shield = Math.min(100, state.shield + 16 * dt); }
 
+      // --- Objective tracking ---
+      updateObjective(dt); if (!state.running) return;
+
       // --- Spawn ---
       if (state.toSpawn > 0) { state.spawnTimer -= dt; if (state.spawnTimer <= 0) { spawnInvader(); state.toSpawn--; state.spawnTimer = state.spawnInterval; } }
 
@@ -1167,7 +1244,7 @@
             if (state.target === inv) state.target = null;
             damagePlanet(9); if (!state.running) return; continue;
           }
-        } else if (ud.role === "hunter") {
+        } else if (ud.role === "hunter" || ud.role === "elite") {
           desired = tmpA.copy(shipPos).sub(inv.position);
           const d = desired.length(); desired.normalize();
           // keep a strafing distance
@@ -1187,7 +1264,7 @@
         inv.rotation.y += dt * ud.spin; inv.userData.ring.rotation.x += dt * 2;
 
         // hunter fire
-        if (ud.role === "hunter") {
+        if (ud.role === "hunter" || ud.role === "elite") {
           ud.fireTimer -= dt;
           if (ud.fireTimer <= 0 && state.enemyFireBudget > 0.25 && inv.position.distanceTo(shipPos) < 160) {
             spawnEnemyBullet(inv); state.enemyFireBudget = 0;
@@ -1207,10 +1284,20 @@
             spawnExplosion(inv.position, inv.userData.core.material.color.getHex(), 16);
             Sfx.explosion();
             const dist = inv.position.distanceTo(shipPos);
-            const points = inv.userData.role === "bomber" ? 75 : inv.userData.role === "hunter" ? 50 : 30;
-            addScore(points, inv.position, "#ffd166");
-            if (state.target === inv) state.target = null;
-            invaderPool.release(inv); hit = true; break;
+            inv.userData.hp -= 1;
+            hit = true;
+            if (inv.userData.hp <= 0) {
+              const points = inv.userData.role === "elite" ? 250 : inv.userData.role === "bomber" ? 75 : inv.userData.role === "hunter" ? 50 : 30;
+              addScore(points, inv.position, "#ffd166");
+              if (state.objective && state.objective.type === "intercept_bombers" && inv.userData.role === "bomber") state.objective.progress++;
+              if (state.objective && state.objective.type === "destroy_elite" && inv.userData.role === "elite") state.objective.progress++;
+              if (state.target === inv) state.target = null;
+              invaderPool.release(inv);
+            } else {
+              Sfx.hit();
+              scorePopup(inv.position, "HIT", "#b388ff");
+            }
+            break;
           }
         }
         if (!hit) for (const a of asteroids) {
@@ -1260,9 +1347,11 @@
       updateTarget();
 
       // --- Wave cleared ---
-      if (state.toSpawn === 0 && invaderPool.active.length === 0) {
+      if (isObjectiveComplete()) {
         Sfx.waveClear(); addScore(150);
         state.hull = Math.min(100, state.hull + 12); term("WAVE CLEARED — HULL REPAIRED");
+        if (invaderPool.active.length) invaderPool.releaseAll();
+        enemyBullets.releaseAll();
         beginWave(state.wave + 1);
       }
     }
