@@ -1,13 +1,15 @@
-# Orbital Defender — 3D Planet Defense
+# Starfall Defender — 3D Space Combat
 
-A browser-based 3D action game built with [Three.js](https://threejs.org/).
-You pilot a fighter that **flies around a 3D planet** on great-circle orbits,
-climbing and diving to intercept waves of invaders that dive in from deep space.
-Every invader that reaches the surface damages the world — keep the planet's
-integrity above zero for as long as you can.
+A browser-based, cinematic 3D space-combat sim built with [Three.js](https://threejs.org/).
+You fly a fighter freely through open space, dogfighting a swarm of glowing invaders among
+drifting asteroids while a photorealistic homeworld hangs in the distance. Bomber invaders
+break off to dive at the planet — stop them before its integrity hits zero, and keep your own
+hull intact.
 
-Rendered in real 3D with a procedurally-textured planet, cloud layer, atmospheric
-glow, a full starfield, synthesized sound effects, and explosion particles.
+Features a **first-person cockpit** (with a chase-cam toggle), a **photorealistic Earth** with
+night-side city lights and an atmospheric rim glow, a distant moon, **bloom/cinematic** post-
+processing, a **target-lock HUD** with lead indicator, a **radar**, a systems panel, and a
+retro green status terminal.
 
 ## Play
 
@@ -20,14 +22,14 @@ python3 -m http.server 8000
 # then open http://localhost:8000 in a browser
 ```
 
-> A local server is recommended because the page loads Three.js as an ES module.
-> Opening `index.html` directly via `file://` may be blocked by the browser's
-> module/CORS rules in some setups.
+> A local server is recommended because the page loads Three.js (and its post-processing
+> add-ons + the Earth/moon textures) as ES modules / assets from a CDN. Opening `index.html`
+> directly via `file://` may be blocked by the browser's module/CORS rules.
 
 ## Deploy to Vercel
 
-This is a static site (no build step). A `vercel.json` at the repo root rewrites
-`/` to this game, so the deployed site opens straight into the game.
+This is a static site (no build step). A `vercel.json` at the repo root rewrites `/` to this
+game, so the deployed site opens straight into it.
 
 **Option A — Vercel CLI (fastest):** from the repo root, on the branch with the game:
 
@@ -37,52 +39,61 @@ vercel login           # once
 vercel --prod          # deploy; accept the defaults (no build, root output)
 ```
 
-Vercel prints the live URL when it finishes.
-
-**Option B — Git integration (auto-deploy on push):**
-
-1. Go to <https://vercel.com/new> and import this GitHub repo.
-2. Framework preset: **Other**. Leave Build Command empty and Output Directory as the repo root.
-3. Set the Production Branch to the branch holding the game (or merge it to `main`).
-4. Deploy. Every push to that branch then redeploys automatically.
+**Option B — Git integration (auto-deploy on push):** import the repo at
+<https://vercel.com/new> (framework preset **Other**, no build command), set the production
+branch, and every push redeploys.
 
 ## Controls
 
-| Action | Keys |
-| ------ | ---- |
-| Steer around the planet | `←` `→` or `A` `D` |
-| Climb / dive (and aim)  | `↑` `↓` or `W` `S` |
-| Fire                    | `Space` |
+| Action | Keyboard / Mouse | Touch |
+| ------ | ---------------- | ----- |
+| Pitch (nose up/down) | `W` `S` or `↑` `↓` | left stick (up/down) |
+| Yaw (turn left/right) | `A` `D` or `←` `→` | left stick (left/right) |
+| Roll | `Q` `E` | roll buttons |
+| Throttle | mouse wheel or `Z` `X` | auto-cruise |
+| Boost | `Shift` (hold) | `>>` button |
+| Fire | `Space` or left-click | `◉` button |
+| Toggle cockpit / chase | `C` | `VIEW` button |
+| Resume after pause | click | — |
 
-On touch devices, on-screen pads appear automatically: steering on the left,
-climb/dive plus fire on the right.
+On desktop the game uses **pointer lock** for mouse aiming; press `Esc` to release it (the game
+pauses and shows a click-to-resume prompt).
 
 ## Gameplay
 
-- Your ship continuously flies forward along an orbit. Steer to circle the globe,
-  and climb/dive to change altitude and tilt your aim at incoming threats.
-- Invaders spawn out in space and descend straight toward the planet's surface.
-  Shoot them before they hit — the higher you intercept one, the more points it's worth.
-- A **red arrow** at the screen edge points to the nearest incoming invader, so
-  you always know which way to turn.
-- Each surface impact (or hit from an enemy shot) lowers **planet integrity**.
-  Clearing a wave repairs a little of it.
-- Waves get bigger and faster, and there's no win screen — it's an endless defense.
-  It's game over when planet integrity reaches zero.
+- Fly freely through open space. Invaders spawn around you and stream in:
+  - **Hunters** chase and shoot at you.
+  - **Bombers** (orange) ignore you and dive for the planet — let one through and planet
+    integrity drops.
+  - **Drifters** wander for easy points.
+- The HUD auto-**locks** the nearest hostile ahead of you and shows its distance plus a green
+  **lead marker** — put your shots on the lead marker to hit moving targets.
+- The **radar** (bottom-left) shows contacts relative to your heading; the **SYSTEMS** panel
+  (bottom-right) tracks hull, shield, planet integrity, and weapon readiness.
+- **Shields** absorb hits and recharge when you avoid damage for a few seconds; **hull** does
+  not regenerate. Asteroid and invader collisions hurt.
+- Waves escalate endlessly (more, faster, more aggressive invaders). Clearing a wave repairs
+  some hull. It's game over if your **hull** or the **planet integrity** reaches zero.
 
 ## How it works
 
 Everything lives in `index.html`:
 
-- **Scene** — Three.js `WebGLRenderer`, a chase camera, sun + fill lighting, a
-  spherical starfield, and a planet built from canvas-generated textures (ocean,
-  continents, ice caps) with a rotating cloud layer and an additive atmosphere glow.
-- **Flight model** — the ship's position and heading live on an orbital sphere.
-  Steering rotates the heading around the local "up"; forward motion advances the
-  ship along a great circle; pitch changes altitude and the aim vector. This keeps
-  movement smooth all the way around the globe without gimbal-lock at the poles.
-- **Entities** — invaders, bullets, and explosion particles are plain meshes tracked
-  in arrays and updated each frame, with cheap squared-distance collision checks.
-- **Loop** — a delta-time `requestAnimationFrame` loop handles input, flight,
-  spawning, enemy AI, collisions, the projected HUD (crosshair, threat arrow,
-  score popups), and camera smoothing + shake.
+- **Rendering** — Three.js `WebGLRenderer` with ACES tone mapping and an `EffectComposer`
+  bloom chain (`UnrealBloomPass` + `OutputPass`, loaded from the same unpkg CDN via the
+  importmap). A `LOW_FX` path auto-detects weak/mobile devices and disables bloom and lowers
+  pixel ratio.
+- **Planet** — real Three.js example textures (day map, night city lights, clouds, specular)
+  loaded from the CDN, blended in a custom day/night `ShaderMaterial` by the sun direction so
+  city lights only glow on the dark side; a fresnel `ShaderMaterial` adds the blue atmosphere,
+  with a separate cloud sphere and a distant moon. A canvas-texture fallback covers load errors.
+- **Flight** — true 6DOF: the ship carries a position and a `Quaternion`; pitch/yaw/roll build a
+  local-space delta quaternion (no gimbal lock, natural banking), throttle/boost drive velocity
+  with inertia, and motion is soft-bounded to a play sphere.
+- **Cameras** — one world camera for cockpit (locked to the ship, with a 3D canopy/dashboard
+  rendered as a separate overlay pass so the frame never blooms or clips) and chase modes.
+- **Entities** — invaders, bullets, and particles are object-pooled; asteroids are a drifting
+  field. Collisions use cheap squared-distance checks.
+- **HUD** — DOM/CSS cockpit panels; 3D positions are projected to screen for the lock box, lead
+  marker, score popups, and radar blips.
+- **Audio** — synthesized SFX via the Web Audio API (laser, lock, boost, explosions, hits).
