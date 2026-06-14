@@ -932,9 +932,17 @@
     inv.userData.hp = 1;
     const r = Math.random();
     inv.userData.role = r < state.hunterRatio ? "hunter" : r < state.hunterRatio + 0.25 ? "bomber" : "drifter";
+    inv.userData.phase = "approach";
+    inv.userData.strafeDir = Math.random() < 0.5 ? -1 : 1;
+    inv.userData.boostTimer = 1.6 + Math.random() * 2.4;
+    inv.userData.warningTimer = 0.2 + Math.random() * 1.2;
+    inv.userData.ignoreTimer = 0;
+    inv.userData.orbitTarget = null;
     inv.userData.spin = (Math.random() - 0.5) * 2;
     if (inv.userData.role === "bomber") inv.userData.core.material.color.set(0xff8c1a), inv.userData.core.material.emissive.set(0xff8c1a);
     else inv.userData.core.material.color.set(0xff2d3a), inv.userData.core.material.emissive.set(0xff2d3a);
+    inv.userData.ring.material.emissive.set(0x330008);
+    inv.scale.setScalar(1);
   }
 
   // ---------------------------------------------------------------------------
@@ -1161,6 +1169,31 @@
         let desired;
         if (ud.role === "bomber") {
           desired = tmpA.copy(planetWorld).sub(inv.position).normalize();
+          ud.boostTimer -= dt;
+          ud.warningTimer -= dt;
+          if (ud.boostTimer <= 0) {
+            ud.phase = "dive";
+            ud.boostTimer = 2.8 + Math.random() * 2.6;
+            ud.warningTimer = 0;
+          }
+          if (ud.phase === "dive") {
+            desired.multiplyScalar(2.45);
+            inv.userData.ring.material.emissive.set(0xff5d00);
+            if (ud.warningTimer <= 0) {
+              term("BOMBER DIVE DETECTED");
+              ud.warningTimer = 1.2;
+            }
+            for (let k = 0; k < 2; k++) {
+              const m = particlePool.acquire();
+              m.material.color.set(0xff8c1a); m.material.opacity = 0.8;
+              m.position.copy(inv.position).add(new THREE.Vector3((Math.random() - 0.5) * 1.4, (Math.random() - 0.5) * 1.4, (Math.random() - 0.5) * 1.4));
+              m.userData.vel = desired.clone().multiplyScalar(-7).add(new THREE.Vector3((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 4, (Math.random() - 0.5) * 4));
+              m.userData.life = 0.6;
+            }
+            if (ud.boostTimer < 1.3) ud.phase = "approach";
+          } else {
+            inv.userData.ring.material.emissive.set(0x330008);
+          }
           // reached the planet?
           if (inv.position.distanceTo(planetWorld) < PR + 6) {
             spawnExplosion(inv.position, 0xff8c1a, 18); invaderPool.release(inv);
@@ -1168,18 +1201,57 @@
             damagePlanet(9); if (!state.running) return; continue;
           }
         } else if (ud.role === "hunter") {
-          desired = tmpA.copy(shipPos).sub(inv.position);
-          const d = desired.length(); desired.normalize();
-          // keep a strafing distance
-          if (d < 35) desired.multiplyScalar(-1);
+          const toShip = tmpA.copy(shipPos).sub(inv.position);
+          const d = toShip.length();
+          const chase = toShip.normalize();
+          const strafe = tmpB.crossVectors(chase, upV).normalize().multiplyScalar(ud.strafeDir);
+          if (d < 30) desired = chase.multiplyScalar(-1.1).addScaledVector(strafe, 0.9).normalize();
+          else if (d > 62) desired = chase.multiplyScalar(0.8).addScaledVector(strafe, 0.85).normalize();
+          else desired = strafe.addScaledVector(chase, Math.sin(t * 1.7 + ud.spin) * 0.18).normalize();
+          ud.warningTimer -= dt;
+          if (ud.warningTimer <= 0 && d < 75) {
+            term("HUNTER STRAFE VECTOR LOCK");
+            ud.warningTimer = 4 + Math.random() * 3;
+          }
+          if (Math.random() < dt * 0.2) ud.strafeDir *= -1;
         } else {
-          // drifter: wander slowly, but steer back toward the fight if it strays
-          // out of engagement range, so an unshot drifter can never stall a wave
-          if (inv.position.distanceTo(shipPos) > 170) {
-            desired = tmpA.copy(shipPos).sub(inv.position).normalize();
+          const shipDist = inv.position.distanceTo(shipPos);
+          ud.warningTimer -= dt;
+          if (ud.phase === "mine") {
+            desired = tmpA.set(0, 0, 0);
+            inv.scale.setScalar(1.25 + Math.sin(t * 8) * 0.08);
+            inv.userData.ring.rotation.y += dt * 5;
+            if (ud.warningTimer <= 0 && shipDist < 90) {
+              term("DRIFTER MINE ARMED");
+              ud.warningTimer = 3.5;
+            }
+          } else if (shipDist < 38) {
+            ud.phase = "flee";
+            desired = tmpA.copy(inv.position).sub(shipPos).normalize();
+            if (ud.warningTimer <= 0) { term("DRIFTER FLEE PATTERN"); ud.warningTimer = 4; }
           } else {
-            desired = tmpA.copy(ud.vel).normalize();
-            if (desired.lengthSq() < 0.01) desired.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
+            ud.ignoreTimer += dt;
+            if (ud.ignoreTimer > 11 && shipDist > 85) {
+              ud.phase = "mine";
+              ud.speed = 0;
+              ud.core.material.color.set(0x9b5dff); ud.core.material.emissive.set(0x9b5dff);
+              term("DRIFTER MINE TRANSFORM");
+              desired = tmpA.set(0, 0, 0);
+            } else {
+              if (!ud.orbitTarget || Math.random() < dt * 0.12) {
+                ud.orbitTarget = asteroids.length ? asteroids[Math.floor(Math.random() * asteroids.length)] : null;
+              }
+              if (ud.orbitTarget) {
+                const toAsteroid = tmpA.copy(ud.orbitTarget.position).sub(inv.position);
+                const tangent = tmpB.crossVectors(toAsteroid, upV).normalize().multiplyScalar(ud.strafeDir);
+                desired = toAsteroid.normalize().multiplyScalar(0.45).add(tangent).normalize();
+                ud.phase = "orbit";
+                if (ud.warningTimer <= 0) { term("DRIFTER ASTEROID ORBIT"); ud.warningTimer = 5 + Math.random() * 4; }
+              } else {
+                desired = tmpA.copy(ud.vel).normalize();
+                if (desired.lengthSq() < 0.01) desired.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
+              }
+            }
           }
         }
         ud.vel.lerp(desired.multiplyScalar(ud.speed), 1 - Math.pow(0.2, dt));
@@ -1250,9 +1322,11 @@
       for (let j = invaderPool.active.length - 1; j >= 0; j--) {
         const inv = invaderPool.active[j];
         if (shipPos.distanceToSquared(inv.position) < 3 * 3) {
-          spawnExplosion(inv.position, 0xff2d3a, 14); Sfx.explosion();
+          const mineHit = inv.userData.role === "drifter" && inv.userData.phase === "mine";
+          spawnExplosion(inv.position, mineHit ? 0x9b5dff : 0xff2d3a, mineHit ? 24 : 14); Sfx.explosion();
+          if (mineHit) term("PROXIMITY MINE DETONATED");
           if (state.target === inv) state.target = null;
-          invaderPool.release(inv); damageHull(22); if (!state.running) return;
+          invaderPool.release(inv); damageHull(mineHit ? 36 : 22); if (!state.running) return;
         }
       }
 
