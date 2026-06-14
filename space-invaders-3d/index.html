@@ -242,6 +242,7 @@
     <div>SCORE <span id="score">0</span></div>
     <div id="hiscore">HI <span id="hiscoreVal">0</span></div>
     <div>WAVE <span id="wave">1</span></div>
+    <div>COMBO x<span id="combo">1</span></div>
   </div>
 
   <div id="flightinfo" class="hud">
@@ -1242,13 +1243,14 @@
     allies,
     planetWarningFlags: { 75: false, 50: false, 25: false },
     planetFlash: 0, cityFlicker: 0, defensePulse: 0,
+    combo: 1, comboTimer: 0, waveDamageTaken: false,
   };
 
   // ---------------------------------------------------------------------------
   // HUD references
   // ---------------------------------------------------------------------------
   const ui = {
-    score: document.getElementById("score"), hiscore: document.getElementById("hiscoreVal"), wave: document.getElementById("wave"),
+    score: document.getElementById("score"), hiscore: document.getElementById("hiscoreVal"), wave: document.getElementById("wave"), combo: document.getElementById("combo"),
     thr: document.getElementById("thr"), viewMode: document.getElementById("viewMode"),
     hullVal: document.getElementById("hullVal"), hullFill: document.getElementById("hullFill"),
     shieldVal: document.getElementById("shieldVal"), shieldFill: document.getElementById("shieldFill"),
@@ -1300,7 +1302,7 @@
     el.style.background = pct > 50 ? hi : pct > 25 ? mid : "linear-gradient(90deg, #ff5d73, #ff2d55)";
   }
   function syncHud() {
-    ui.score.textContent = state.score; ui.hiscore.textContent = state.hiscore; ui.wave.textContent = state.wave;
+    ui.score.textContent = state.score; ui.hiscore.textContent = state.hiscore; ui.wave.textContent = state.wave; ui.combo.textContent = state.combo;
     ui.thr.textContent = Math.round(controlAxes.throttle * 100);
     ui.hullVal.textContent = Math.round(state.hull); ui.hullFill.style.width = clamp(state.hull, 0, 100) + "%";
     ui.shieldVal.textContent = Math.round(state.shield); ui.shieldFill.style.width = clamp(state.shield, 0, 100) + "%";
@@ -1335,10 +1337,36 @@
     }
   }
 
-  function addScore(points, atPos, color) {
-    state.score += points;
+  function addScore(points, atPos, color, label) {
+    const awarded = Math.round(points);
+    state.score += awarded;
     if (state.score > state.hiscore) state.hiscore = state.score;
-    if (atPos) scorePopup(atPos, "+" + points, color);
+    if (atPos) {
+      scorePopup(atPos, "+" + awarded, color);
+      if (label) {
+        tmpB.copy(atPos).y += 4;
+        scorePopup(tmpB, label, color || "#ffd166");
+      }
+    }
+    syncHud();
+  }
+
+  function addKillScore(inv, basePoints) {
+    const role = inv.userData.role;
+    const isContinuingCombo = state.comboTimer > 0;
+    state.combo = isContinuingCombo ? Math.min(state.combo + 1, 9) : 1;
+    state.comboTimer = 3.0;
+
+    let bonus = 0;
+    const labels = [];
+    if (state.combo > 1) labels.push("COMBO x" + state.combo);
+    if (role === "bomber" && inv.position.distanceTo(planetGroup.position) < PR + 35) {
+      bonus += 100;
+      labels.push("PLANET SAVE");
+      term("PLANET SAVE BONUS +" + bonus);
+    }
+
+    addScore((basePoints + bonus) * state.combo, inv.position, role === "bomber" && bonus ? "#7df9ff" : "#ffd166", labels.join(" • "));
   }
 
   function damageHull(amount) {
@@ -1346,7 +1374,7 @@
       state.shake = Math.max(state.shake, 0.25);
       return;
     }
-
+    state.waveDamageTaken = true;
     let a = amount;
     if (state.shield > 0) { const s = Math.min(state.shield, a); state.shield -= s; a -= s; }
     if (a > 0) state.hull -= a;
@@ -1377,6 +1405,7 @@
     const before = state.integrity;
     state.integrity = Math.max(0, state.integrity - amount);
     state.waveTookDamage = true;
+    state.waveDamageTaken = true;
     state.shake = Math.max(state.shake, 1.2);
     state.cockpitShake = Math.max(state.cockpitShake, 0.25);
     state.planetFlash = 1.0; state.cityFlicker = 1.4; state.defensePulse = 1.0;
@@ -1465,6 +1494,7 @@
     state.spawnInterval = Math.max(0.4, 1.4 - (n - 1) * 0.1);
     state.invSpeed = 13 + (n - 1) * 1.6;
     state.hunterRatio = Math.min(0.85, 0.45 + (n - 1) * 0.06);
+    state.combo = 1; state.comboTimer = 0; state.waveDamageTaken = false;
     syncHud(); toast("WAVE " + n); term("WAVE " + n + " INBOUND");
   }
 
@@ -1669,6 +1699,7 @@
     state.cockpitShake = 0; state.boostHeat = 0;
     state.planetWarningFlags = { 75: false, 50: false, 25: false };
     state.planetFlash = 0; state.cityFlicker = 0; state.defensePulse = 0;
+    state.combo = 1; state.comboTimer = 0; state.waveDamageTaken = false;
     controlAxes.throttle = 0.6;
     shipPos.set(0, 0, 60); shipVel.set(0, 0, 0);
     shipQuat.identity(); mouseAim.x = 0; mouseAim.y = 0;
@@ -1832,6 +1863,10 @@
       state._wasBoost = state.boostActive;
 
       // --- Firing ---
+      if (state.comboTimer > 0) {
+        state.comboTimer -= dt;
+        if (state.comboTimer <= 0) { state.comboTimer = 0; state.combo = 1; }
+      }
       state.fireCooldown -= dt;
       if (controlAxes.fire && state.fireCooldown <= 0) {
         fireWeapon();
@@ -2021,7 +2056,7 @@
               spawnExplosion(inv.position, inv.userData.baseColor, role === "boss" ? 22 : 16);
               Sfx.explosion();
               const points = role === "bomber" ? 75 : role === "boss" ? 300 : role === "hunter" ? 50 : 30;
-              addScore(points, inv.position, "#ffd166");
+              addKillScore(inv, points);
               profile.totalKills++;
               if (role === "bomber") profile.bombersIntercepted++;
               if (role === "boss") profile.bossKills++;
@@ -2156,6 +2191,10 @@
           term("PERFECT DEFENSE — NO DAMAGE RECORDED");
         }
         saveProfile(); checkAchievements({ popup: true });
+        if (!state.waveDamageTaken) {
+          addScore(250, shipPos, "#39ff8c", "NO DAMAGE BONUS");
+          term("NO-DAMAGE WAVE BONUS +250");
+        }
         state.hull = Math.min(100, state.hull + 12); term("WAVE CLEARED — HULL REPAIRED");
         serviceAlliesBetweenWaves();
         beginWave(state.wave + 1);
