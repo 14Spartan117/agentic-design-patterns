@@ -288,7 +288,10 @@
         <button id="rollRBtn" aria-label="Roll right">&#x21BB;</button>
         <button id="viewBtnT" aria-label="Toggle view">VIEW</button>
       </div>
-      <button id="fireBtnT" aria-label="Fire">&#x25C9;</button>
+      <div class="col">
+        <button id="weaponBtnT" aria-label="Cycle weapon">WPN</button>
+        <button id="fireBtnT" aria-label="Fire">&#x25C9;</button>
+      </div>
     </div>
   </div>
 
@@ -300,8 +303,8 @@
       their bombers reach the homeworld. Lock targets, lead your shots, and watch your hull.<br /><br />
       <span class="key">W</span><span class="key">S</span> pitch &nbsp; <span class="key">A</span><span class="key">D</span> yaw &nbsp; <span class="key">Q</span><span class="key">E</span> roll<br />
       <span class="key">Mouse</span> aim &nbsp; <span class="key">R</span><span class="key">F</span> or wheel throttle &nbsp; <span class="key">Shift</span> boost<br />
-      <span class="key">Space</span> / click fire &nbsp; <span class="key">C</span> toggle cockpit / chase<br /><br />
-      On mobile: left stick steers, right buttons fire / boost / roll / view.
+      <span class="key">Space</span> / click fire &nbsp; <span class="key">V</span> cycle weapon &nbsp; <span class="key">C</span> toggle cockpit / chase<br /><br />
+      On mobile: left stick steers, right buttons fire / boost / roll / view / weapon.
     </p>
     <section id="profilePanel" class="panel" aria-label="Persistent commander profile">
       <h3>COMMANDER PROFILE</h3>
@@ -352,8 +355,16 @@
   const BOOST_REGEN = 22;          // boost energy recovered per second
   const BOOST_RECOVER = 38;        // energy needed to clear overheat
   const PITCH_RATE = 1.7, YAW_RATE = 1.4, ROLL_RATE = 2.6;  // rad/s at full input
-  const BULLET_SPEED = 170, BULLET_RANGE = 320, FIRE_CD = 0.13;
-  const PLAYER_BULLET_DAMAGE = 1;
+  const BULLET_SPEED = 170, BULLET_RANGE = 320;
+  const PLAYER_BULLET_DAMAGE = 1;   // fallback damage when a projectile has none
+  const WEAPON_ORDER = ["laser", "spread", "missile", "charge"];
+  const WEAPONS = {
+    laser:  { name: "LASER",  cooldown: 0.13, speed: BULLET_SPEED, damage: 1, color: 0x9dffb0, size: 1.0, pellets: 1, range: BULLET_RANGE },
+    spread: { name: "SPREAD", cooldown: 0.34, speed: 145,          damage: 1, color: 0xffd166, size: 0.82, pellets: 5, spread: 0.105, range: 250 },
+    missile:{ name: "MISSILE",cooldown: 0.62, speed: 115,          damage: 3, color: 0xff8c1a, size: 1.45, pellets: 1, range: 360 },
+    charge: { name: "CHARGE", cooldown: 0.95, speed: 190,          damage: 5, color: 0x7df9ff, size: 2.0, pellets: 1, range: 420 },
+  };
+  const FIRE_CD = WEAPONS.laser.cooldown;
   const ENEMY_BULLET_SPEED = 75, ENEMY_BULLET_RANGE = 260;
   const FOV_BASE = 70, FOV_BOOST = 84;
   const RADAR_RANGE = 280;
@@ -792,7 +803,7 @@
   const enemyBulletMat = new THREE.MeshBasicMaterial({ color: 0xff5d73 });
   const particleGeo = new THREE.SphereGeometry(0.18, 6, 6);
 
-  const playerBullets = makePool(() => { const m = new THREE.Mesh(playerBulletGeo, playerBulletMat); scene.add(m); return m; });
+  const playerBullets = makePool(() => { const m = new THREE.Mesh(playerBulletGeo, playerBulletMat.clone()); scene.add(m); return m; });
   const enemyBullets = makePool(() => { const m = new THREE.Mesh(enemyBulletGeo, enemyBulletMat); scene.add(m); return m; });
   const particlePool = makePool(() => { const m = new THREE.Mesh(particleGeo, new THREE.MeshBasicMaterial({ transparent: true })); scene.add(m); return m; });
 
@@ -856,12 +867,43 @@
   // ---------------------------------------------------------------------------
   // Spawning helpers
   // ---------------------------------------------------------------------------
-  function spawnPlayerBullet() {
+  function spawnWeaponProjectile(weapon, dir, lateralOffset = 0) {
     const b = playerBullets.acquire();
-    b.position.copy(player.position).addScaledVector(forward, 1.6);
-    b.quaternion.copy(shipQuat); b.rotateX(Math.PI / 2);
-    b.userData.vel = forward.clone().multiplyScalar(BULLET_SPEED).addScaledVector(shipVel, 0.5);
+    b.position.copy(player.position).addScaledVector(forward, 1.6).addScaledVector(rightV, lateralOffset);
+    b.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+    b.material.color.setHex(weapon.color);
+    b.scale.setScalar(weapon.size);
+    b.userData.vel = dir.clone().multiplyScalar(weapon.speed).addScaledVector(shipVel, 0.5);
     b.userData.from = b.position.clone();
+    b.userData.damage = weapon.damage;
+    b.userData.range = weapon.range;
+  }
+
+  function fireWeapon() {
+    const weapon = WEAPONS[state.weaponType] || WEAPONS.laser;
+    const count = weapon.pellets || 1;
+    const spread = weapon.spread || 0;
+    for (let i = 0; i < count; i++) {
+      const mid = (count - 1) / 2;
+      const yaw = (i - mid) * spread;
+      const pitch = count > 1 && i % 2 ? spread * 0.35 : 0;
+      const dir = forward.clone().applyAxisAngle(upV, yaw).applyAxisAngle(rightV, pitch).normalize();
+      spawnWeaponProjectile(weapon, dir, (i - mid) * 0.18);
+    }
+    Sfx.laser();
+    state.fireCooldown = weapon.cooldown;
+  }
+
+  function cycleWeapon(step = 1) {
+    const idx = WEAPON_ORDER.indexOf(state.weaponType);
+    state.weaponType = WEAPON_ORDER[(idx + step + WEAPON_ORDER.length) % WEAPON_ORDER.length];
+    state.fireCooldown = Math.min(state.fireCooldown, getActiveWeapon().cooldown);
+    term("WEAPON SELECT — " + getActiveWeapon().name);
+    syncHud();
+  }
+
+  function getActiveWeapon() {
+    return WEAPONS[state.weaponType] || WEAPONS.laser;
   }
   function spawnEnemyBullet(inv) {
     const b = enemyBullets.acquire();
@@ -930,7 +972,7 @@
     score: 0, wave: 1,
     hull: 100, shield: 100, integrity: 100,
     hiscore: Number(localStorage.getItem(HISCORE_KEY) || 0),
-    fireCooldown: 0, shieldRegenTimer: 0, invulnerableTimer: 0, shake: 0,
+    fireCooldown: 0, weaponType: "laser", shieldRegenTimer: 0, invulnerableTimer: 0, shake: 0,
     boostEnergy: 100, boostOverheated: false, boostActive: false,
     cameraMode: "cockpit",
     target: null, lockTimer: 0,
@@ -998,8 +1040,9 @@
     ui.planetVal.textContent = Math.round(state.integrity); ui.planetFill.style.width = clamp(state.integrity, 0, 100) + "%";
     barColor(ui.hullFill, state.hull, "linear-gradient(90deg,#39ff8c,#7df9ff)", "linear-gradient(90deg,#ffd166,#ffae42)");
     barColor(ui.planetFill, state.integrity, "linear-gradient(90deg,#b388ff,#7df9ff)", "linear-gradient(90deg,#ffd166,#ffae42)");
-    const wpct = clamp((1 - state.fireCooldown / FIRE_CD) * 100, 0, 100);
-    ui.weaponFill.style.width = wpct + "%"; ui.weaponVal.textContent = state.fireCooldown <= 0 ? "RDY" : "...";
+    const activeWeapon = getActiveWeapon();
+    const wpct = clamp((1 - state.fireCooldown / activeWeapon.cooldown) * 100, 0, 100);
+    ui.weaponFill.style.width = wpct + "%"; ui.weaponVal.textContent = activeWeapon.name + " " + (state.fireCooldown <= 0 ? "RDY" : "...");
     const tpct = Math.round(controlAxes.throttle * 100);
     ui.thrFill.style.width = tpct + "%"; ui.thrVal2.textContent = tpct;
     const bpct = Math.round(clamp(state.boostEnergy, 0, 100));
@@ -1093,6 +1136,7 @@
     keys[e.code] = true;
     if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) e.preventDefault();
     if (e.code === "KeyC") toggleView();
+    if (e.code === "KeyV" && !e.repeat) cycleWeapon(1);
     if (e.code === "KeyZ" || e.code === "KeyF") controlAxes.throttle = clamp(controlAxes.throttle - 0.1, 0, 1);
     if (e.code === "KeyX" || e.code === "KeyR") controlAxes.throttle = clamp(controlAxes.throttle + 0.1, 0, 1);
   });
@@ -1178,6 +1222,7 @@
     tap("thrUpBtn", () => controlAxes.throttle = clamp(controlAxes.throttle + 0.15, 0, 1));
     tap("thrDownBtn", () => controlAxes.throttle = clamp(controlAxes.throttle - 0.15, 0, 1));
     tap("viewBtnT", () => toggleView());
+    tap("weaponBtnT", () => cycleWeapon(1));
   }
   setupTouch();
   window.addEventListener("touchstart", () => document.body.classList.add("show-touch"), { once: true });
@@ -1196,7 +1241,7 @@
     Sfx.init(); Sfx.resume();
     state.running = true; state.paused = false;
     state.score = 0; state.hull = 100; state.shield = 100; state.integrity = 100;
-    state.fireCooldown = 0; state.shieldRegenTimer = 0; state.invulnerableTimer = 0; state.shake = 0; state.target = null; state.waveTookDamage = false;
+    state.fireCooldown = 0; state.weaponType = "laser"; state.shieldRegenTimer = 0; state.invulnerableTimer = 0; state.shake = 0; state.target = null; state.waveTookDamage = false;
     state.boostEnergy = 100; state.boostOverheated = false; state.boostActive = false; state._wasBoost = false;
     controlAxes.throttle = 0.6;
     shipPos.set(0, 0, 60); shipVel.set(0, 0, 0);
@@ -1317,7 +1362,7 @@
 
       // --- Firing ---
       state.fireCooldown -= dt;
-      if (controlAxes.fire && state.fireCooldown <= 0) { spawnPlayerBullet(); Sfx.laser(); state.fireCooldown = FIRE_CD; }
+      if (controlAxes.fire && state.fireCooldown <= 0) fireWeapon();
 
       // --- Shield regen ---
       if (state.shieldRegenTimer > 0) state.shieldRegenTimer -= dt;
@@ -1407,7 +1452,7 @@
               if (state.target === inv) state.target = null;
               invaderPool.release(inv);
             } else {
-              spawnExplosion(inv.position, inv.userData.baseColor, 5);
+              spawnExplosion(inv.position, inv.userData.baseColor, 5); Sfx.hit();
               if (inv.userData.maxHp > 1) scorePopup(inv.position, "ARMOR " + inv.userData.hp, "#b388ff");
             }
             break;
@@ -1416,7 +1461,7 @@
         if (!hit) for (const a of asteroids) {
           if (b.position.distanceToSquared(a.position) < (a.userData.radius + 0.4) ** 2) { spawnExplosion(b.position, 0x9a9a9a, 6); hit = true; break; }
         }
-        if (hit || b.position.distanceToSquared(b.userData.from) > BULLET_RANGE * BULLET_RANGE) playerBullets.release(b);
+        if (hit || b.position.distanceToSquared(b.userData.from) > (b.userData.range || BULLET_RANGE) ** 2) playerBullets.release(b);
       }
 
       // --- Enemy bullets ---
@@ -1518,7 +1563,7 @@
         ui.lockDist.textContent = Math.round(shipPos.distanceTo(state.target.position));
         // lead indicator
         const dist = shipPos.distanceTo(state.target.position);
-        tmpA.copy(state.target.userData.vel).multiplyScalar(dist / BULLET_SPEED).add(state.target.position);
+        tmpA.copy(state.target.userData.vel).multiplyScalar(dist / getActiveWeapon().speed).add(state.target.position);
         const ls = worldToScreen(tmpA);
         if (ls.visible) { ui.lead.style.display = "block"; ui.lead.style.left = ls.x + "px"; ui.lead.style.top = ls.y + "px"; }
         else ui.lead.style.display = "none";
