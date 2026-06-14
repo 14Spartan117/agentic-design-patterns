@@ -2901,7 +2901,7 @@
     update(dt, clock.elapsedTime);
 
     renderer.clear();
-    if (baseBloom && !accessibility.disableBloom) composer.render(); else renderer.render(scene, camera);
+    if (useBloom && !accessibility.disableBloom) composer.render(); else renderer.render(scene, camera);
     if (state.cameraMode === "cockpit") {
       cockpitCam.fov = camera.fov; cockpitCam.updateProjectionMatrix();
       renderer.clearDepth();
