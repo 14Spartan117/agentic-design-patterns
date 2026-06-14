@@ -26,6 +26,20 @@ python3 -m http.server 8000
 > add-ons + the Earth/moon textures) as ES modules / assets from a CDN. Opening `index.html`
 > directly via `file://` may be blocked by the browser's module/CORS rules.
 
+## Validate
+
+Run the dependency-free validation script with Node.js before changing the game HTML or
+splitting JavaScript into separate modules:
+
+```bash
+# from the repo root
+node space-invaders-3d/tools/validate.mjs
+```
+
+The script checks that JavaScript-referenced DOM IDs exist, importmap entries cover bare
+module imports, IDs are unique, key game functions are still present, and current/future
+JavaScript modules parse without installing packages.
+
 ## Deploy to Vercel
 
 This is a static site (no build step). A `vercel.json` at the repo root rewrites `/` to this
