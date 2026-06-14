@@ -195,6 +195,29 @@
     font-size: 18px; user-select: none; -webkit-user-select: none; touch-action: none; pointer-events: auto;
   }
   #touch button:active { background: rgba(125, 249, 255, 0.3); }
+
+  /* Settings / quality controls */
+  #settingsToggle {
+    position: fixed; top: 54px; right: 18px; z-index: 25; pointer-events: auto;
+    font-family: "Courier New", monospace; font-size: 12px; letter-spacing: 2px;
+    color: var(--cyan); border: 1px solid rgba(125,249,255,0.45); border-radius: 8px;
+    background: rgba(8,20,36,0.76); padding: 8px 12px; cursor: pointer;
+  }
+  #settingsMenu {
+    position: fixed; top: 94px; right: 18px; z-index: 25; width: 240px; padding: 12px;
+    font-family: "Courier New", monospace; color: #d8f6ff; pointer-events: auto;
+  }
+  #settingsMenu.hidden { display: none; }
+  #settingsMenu .cap { color: var(--cyan); font-size: 12px; letter-spacing: 2px; margin-bottom: 10px; }
+  #settingsMenu label { display: block; margin: 10px 0 4px; font-size: 11px; color: #9fd0ff; letter-spacing: 1px; }
+  #settingsMenu select {
+    width: 100%; color: #e6f7ff; background: rgba(4,10,20,0.95);
+    border: 1px solid rgba(125,249,255,0.35); border-radius: 6px; padding: 6px;
+    font-family: inherit;
+  }
+  #qualityStatus { margin-top: 10px; font-size: 11px; color: var(--green); line-height: 1.5; }
+  @media (max-width: 560px) { #settingsToggle { top: 40px; right: 8px; } #settingsMenu { top: 78px; right: 8px; } }
+
   #touch #fireBtnT {
     width: 84px; height: 84px; font-size: 26px;
     border-color: rgba(255, 93, 115, 0.6); color: var(--red); background: rgba(255, 93, 115, 0.12);
@@ -203,6 +226,25 @@
 </head>
 <body>
   <div id="app"></div>
+  <button id="settingsToggle" aria-expanded="false" aria-controls="settingsMenu">SETTINGS</button>
+  <div id="settingsMenu" class="panel hidden">
+    <div class="cap">QUALITY</div>
+    <label for="qualitySelect">Mode</label>
+    <select id="qualitySelect">
+      <option value="auto">Auto detect</option>
+      <option value="high">High</option>
+      <option value="medium">Medium</option>
+      <option value="low">Low</option>
+    </select>
+    <label for="bloomSelect">Bloom</label>
+    <select id="bloomSelect">
+      <option value="auto">Auto</option>
+      <option value="high">High</option>
+      <option value="low">Reduced</option>
+      <option value="off">Off</option>
+    </select>
+    <div id="qualityStatus">AUTO: sampling frame time</div>
+  </div>
 
   <!-- HUD ------------------------------------------------------------- -->
   <div id="topbar" class="hud">
@@ -325,6 +367,21 @@
   const LOW_FX = window.matchMedia("(pointer: coarse)").matches ||
                  (navigator.hardwareConcurrency || 8) <= 4;
   const IS_TOUCH = window.matchMedia("(pointer: coarse)").matches;
+  const QUALITY_KEY = "starfall_defender_quality";
+  const BLOOM_KEY = "starfall_defender_bloom";
+  const QUALITY_PRESETS = {
+    high: { pixelRatio: 2, particles: 1, asteroids: 28, stars: 4000, bloom: "high" },
+    medium: { pixelRatio: 1.5, particles: 0.75, asteroids: 22, stars: 3000, bloom: "low" },
+    low: { pixelRatio: 1, particles: 0.5, asteroids: 16, stars: 2200, bloom: "off" },
+  };
+  let qualityMode = localStorage.getItem(QUALITY_KEY) || "auto";
+  if (!["auto", "high", "medium", "low"].includes(qualityMode)) qualityMode = "auto";
+  let bloomMode = localStorage.getItem(BLOOM_KEY) || "auto";
+  if (!["auto", "high", "low", "off"].includes(bloomMode)) bloomMode = "auto";
+  let autoQuality = LOW_FX ? "low" : "high";
+  let activeQuality = qualityMode === "auto" ? autoQuality : qualityMode;
+  let activeBloom = "off";
+  let currentPixelRatio = 1;
 
   // Sun direction (world space) shared by light + planet shader
   const SUN_DIR = new THREE.Vector3(0.7, 0.35, 0.5).normalize();
@@ -334,7 +391,12 @@
   // ---------------------------------------------------------------------------
   const app = document.getElementById("app");
   const renderer = new THREE.WebGLRenderer({ antialias: !LOW_FX });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, LOW_FX ? 1.5 : 2));
+  function qualityPreset() { return QUALITY_PRESETS[activeQuality] || QUALITY_PRESETS.medium; }
+  function applyPixelRatio() {
+    currentPixelRatio = Math.min(window.devicePixelRatio || 1, qualityPreset().pixelRatio);
+    renderer.setPixelRatio(currentPixelRatio);
+  }
+  applyPixelRatio();
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.05;
@@ -355,11 +417,17 @@
     0.5,                   // radius
     0.85                   // threshold
   );
-  const useBloom = !LOW_FX;
-  if (useBloom) {
-    composer.addPass(bloomPass);
-    composer.addPass(new OutputPass());
+  let useBloom = false;
+  composer.addPass(bloomPass);
+  composer.addPass(new OutputPass());
+  function applyBloomQuality() {
+    activeBloom = bloomMode === "auto" ? qualityPreset().bloom : bloomMode;
+    useBloom = activeBloom !== "off";
+    bloomPass.enabled = useBloom;
+    bloomPass.strength = activeBloom === "high" ? 0.95 : activeBloom === "low" ? 0.45 : 0;
+    bloomPass.radius = activeBloom === "high" ? 0.5 : 0.35;
   }
+  applyBloomQuality();
 
   // ---------------------------------------------------------------------------
   // Lighting
@@ -376,7 +444,7 @@
   // Starfield (full surrounding sphere)
   // ---------------------------------------------------------------------------
   function makeStarfield() {
-    const count = LOW_FX ? 2200 : 4000;
+    const count = qualityPreset().stars;
     const positions = new Float32Array(count * 3);
     const colors = new Float32Array(count * 3);
     const v = new THREE.Vector3();
@@ -394,8 +462,13 @@
     const mat = new THREE.PointsMaterial({ size: 1.4, vertexColors: true, transparent: true, opacity: 0.95, sizeAttenuation: true });
     return new THREE.Points(geo, mat);
   }
-  const stars = makeStarfield();
+  let stars = makeStarfield();
   scene.add(stars);
+  function rebuildStarfield() {
+    if (stars) { scene.remove(stars); stars.geometry.dispose(); stars.material.dispose(); }
+    stars = makeStarfield();
+    scene.add(stars);
+  }
 
   // ---------------------------------------------------------------------------
   // Planet, clouds, atmosphere, moon, sun flare
@@ -722,7 +795,7 @@
   function spawnAsteroidField() {
     for (const a of asteroids) scene.remove(a);
     asteroids = [];
-    const n = LOW_FX ? 16 : 28;
+    const n = qualityPreset().asteroids;
     for (let i = 0; i < n; i++) {
       const a = makeAsteroid(2 + Math.random() * 6);
       const v = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
@@ -751,7 +824,7 @@
     b.userData.from = b.position.clone();
   }
   function spawnExplosion(pos, color, n) {
-    n = n || 14;
+    n = Math.max(1, Math.round((n || 14) * qualityPreset().particles));
     for (let i = 0; i < n; i++) {
       const m = particlePool.acquire();
       m.material.color.set(color); m.material.opacity = 1;
@@ -834,7 +907,34 @@
     gameOverScreen: document.getElementById("gameOverScreen"), finalScore: document.getElementById("finalScore"),
     gameOverTitle: document.getElementById("gameOverTitle"), gameOverMsg: document.getElementById("gameOverMsg"),
     newHi: document.getElementById("newHi"),
+    settingsToggle: document.getElementById("settingsToggle"), settingsMenu: document.getElementById("settingsMenu"),
+    qualitySelect: document.getElementById("qualitySelect"), bloomSelect: document.getElementById("bloomSelect"),
+    qualityStatus: document.getElementById("qualityStatus"),
   };
+
+  function syncQualityUi(extra = "") {
+    ui.qualitySelect.value = qualityMode; ui.bloomSelect.value = bloomMode;
+    ui.qualityStatus.textContent = `${qualityMode === "auto" ? "AUTO" : "MANUAL"}: ${activeQuality.toUpperCase()} / bloom ${activeBloom.toUpperCase()} / ${currentPixelRatio.toFixed(2)}x${extra}`;
+  }
+  function applyQuality({ rebuildStars = false, respawnAsteroids = false } = {}) {
+    activeQuality = qualityMode === "auto" ? autoQuality : qualityMode;
+    applyPixelRatio(); applyBloomQuality();
+    if (rebuildStars) rebuildStarfield();
+    if (respawnAsteroids && asteroids.length) spawnAsteroidField();
+    syncQualityUi();
+  }
+  function lowerAutoQuality(reason) {
+    if (qualityMode !== "auto") return;
+    const order = ["high", "medium", "low"];
+    const idx = order.indexOf(autoQuality);
+    if (idx < order.length - 1) {
+      autoQuality = order[idx + 1];
+      applyQuality({ rebuildStars: false, respawnAsteroids: false });
+      term(`AUTO QUALITY ${autoQuality.toUpperCase()} — ${reason}`);
+      syncQualityUi(` — reduced after slow frames`);
+    }
+  }
+
   const radarCtx = ui.radar.getContext("2d");
 
   const termLines = [];
@@ -1076,6 +1176,19 @@
   }
   document.getElementById("startBtn").addEventListener("click", startGame);
   document.getElementById("restartBtn").addEventListener("click", startGame);
+  ui.settingsToggle.addEventListener("click", () => {
+    const hidden = ui.settingsMenu.classList.toggle("hidden");
+    ui.settingsToggle.setAttribute("aria-expanded", String(!hidden));
+  });
+  ui.qualitySelect.addEventListener("change", () => {
+    qualityMode = ui.qualitySelect.value; localStorage.setItem(QUALITY_KEY, qualityMode);
+    applyQuality({ rebuildStars: true, respawnAsteroids: true });
+  });
+  ui.bloomSelect.addEventListener("change", () => {
+    bloomMode = ui.bloomSelect.value; localStorage.setItem(BLOOM_KEY, bloomMode);
+    applyQuality();
+  });
+  syncQualityUi();
 
   // ---------------------------------------------------------------------------
   // Targeting
@@ -1352,9 +1465,15 @@
   // Main loop
   // ---------------------------------------------------------------------------
   const clock = new THREE.Clock();
+  const perf = { avg: 1 / 60, slowFor: 0, cooldown: 0, target: 1 / 50 };
   function animate() {
     requestAnimationFrame(animate);
-    const dt = Math.min(clock.getDelta(), 0.05);
+    const rawDt = clock.getDelta();
+    perf.avg = lerp(perf.avg, rawDt, 0.04);
+    if (perf.avg > perf.target) perf.slowFor += rawDt; else perf.slowFor = Math.max(0, perf.slowFor - rawDt * 1.5);
+    perf.cooldown = Math.max(0, perf.cooldown - rawDt);
+    if (perf.slowFor > 4 && perf.cooldown <= 0) { lowerAutoQuality(`${Math.round(1000 / perf.avg)} FPS avg`); perf.slowFor = 0; perf.cooldown = 8; }
+    const dt = Math.min(rawDt, 0.05);
     update(dt, clock.elapsedTime);
 
     renderer.clear();
@@ -1383,7 +1502,9 @@
     const w = window.innerWidth, h = window.innerHeight;
     camera.aspect = w / h; camera.updateProjectionMatrix();
     cockpitCam.aspect = w / h; cockpitCam.updateProjectionMatrix();
+    applyPixelRatio();
     renderer.setSize(w, h); composer.setSize(w, h); bloomPass.setSize(w, h);
+    syncQualityUi();
   });
   </script>
 </body>
