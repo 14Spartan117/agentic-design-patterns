@@ -1,0 +1,5 @@
+{
+  "rewrites": [
+    { "source": "/", "destination": "/space-invaders-3d/index.html" }
+  ]
+}
