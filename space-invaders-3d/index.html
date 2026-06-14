@@ -317,6 +317,7 @@
   const PITCH_RATE = 1.7, YAW_RATE = 1.4, ROLL_RATE = 2.6;  // rad/s at full input
   const BULLET_SPEED = 170, BULLET_RANGE = 320, FIRE_CD = 0.13;
   const ENEMY_BULLET_SPEED = 75, ENEMY_BULLET_RANGE = 260;
+  const ALLY_BULLET_SPEED = 46, ALLY_BULLET_RANGE = 115, ALLY_FIRE_CD = 2.8;
   const FOV_BASE = 70, FOV_BOOST = 84;
   const RADAR_RANGE = 280;
   const HISCORE_KEY = "starfall_defender_hiscore";
@@ -443,6 +444,7 @@
 
   let planet, clouds, moon;
   let satellites = [];
+  let allies = [];
   let defenseRing = null;
   let assetsReady = false;
 
@@ -469,7 +471,17 @@
       sat.userData.rad = PR * (1.32 + Math.random() * 0.8);
       sat.userData.speed = 0.04 + Math.random() * 0.08;
       sat.userData.y = (Math.random() - 0.5) * PR * 0.9;
-      planetGroup.add(sat); satellites.push(sat);
+      sat.userData.ally = true;
+      sat.userData.hpMax = i % 4 === 0 ? 3 : 2;
+      sat.userData.hp = sat.userData.hpMax;
+      sat.userData.level = i % 4 === 0 ? 2 : 1;
+      sat.userData.status = "active";
+      sat.userData.disabledTimer = 0;
+      sat.userData.fireTimer = Math.random() * ALLY_FIRE_CD;
+      sat.userData.target = null;
+      sat.userData.baseScale = sat.scale.clone();
+      sat.userData.muzzle = new THREE.Vector3();
+      planetGroup.add(sat); satellites.push(sat); allies.push(sat);
     }
   }
 
@@ -678,10 +690,13 @@
   const playerBulletMat = new THREE.MeshBasicMaterial({ color: 0x9dffb0 });
   const enemyBulletGeo = new THREE.SphereGeometry(0.34, 10, 10);
   const enemyBulletMat = new THREE.MeshBasicMaterial({ color: 0xff5d73 });
+  const allyBulletGeo = new THREE.SphereGeometry(0.2, 8, 8);
+  const allyBulletMat = new THREE.MeshBasicMaterial({ color: 0x7df9ff });
   const particleGeo = new THREE.SphereGeometry(0.18, 6, 6);
 
   const playerBullets = makePool(() => { const m = new THREE.Mesh(playerBulletGeo, playerBulletMat); scene.add(m); return m; });
   const enemyBullets = makePool(() => { const m = new THREE.Mesh(enemyBulletGeo, enemyBulletMat); scene.add(m); return m; });
+  const allyBullets = makePool(() => { const m = new THREE.Mesh(allyBulletGeo, allyBulletMat); scene.add(m); return m; });
   const particlePool = makePool(() => { const m = new THREE.Mesh(particleGeo, new THREE.MeshBasicMaterial({ transparent: true })); scene.add(m); return m; });
 
   const invaderGeo = new THREE.IcosahedronGeometry(1.0, 0);
@@ -750,6 +765,20 @@
     b.userData.vel = lead.sub(inv.position).normalize().multiplyScalar(ENEMY_BULLET_SPEED);
     b.userData.from = b.position.clone();
   }
+  function spawnAllyBullet(ally, target) {
+    const b = allyBullets.acquire();
+    ally.getWorldPosition(b.position);
+    const dist = b.position.distanceTo(target.position);
+    // Slow, imperfect defense fire: allies lead bombers only partially and add
+    // small dispersion so their support helps without replacing player aim.
+    const lead = tmpA.copy(target.position).addScaledVector(target.userData.vel, dist / ALLY_BULLET_SPEED * 0.45);
+    lead.x += (Math.random() - 0.5) * 5;
+    lead.y += (Math.random() - 0.5) * 5;
+    lead.z += (Math.random() - 0.5) * 5;
+    b.userData.vel = lead.sub(b.position).normalize().multiplyScalar(ALLY_BULLET_SPEED);
+    b.userData.from = b.position.clone();
+    b.userData.owner = ally;
+  }
   function spawnExplosion(pos, color, n) {
     n = n || 14;
     for (let i = 0; i < n; i++) {
@@ -813,6 +842,7 @@
     target: null, lockTimer: 0,
     toSpawn: 0, spawnTimer: 0, spawnInterval: 1.3, invSpeed: 14, hunterRatio: 0.5,
     enemyFireBudget: 0,
+    allies,
   };
 
   // ---------------------------------------------------------------------------
@@ -900,6 +930,58 @@
     term("PLANET STRUCK — INTEGRITY " + Math.round(state.integrity) + "%");
     syncHud();
     if (state.integrity <= 0) endGame("PLANET LOST", "The bombers broke through to the homeworld.");
+  }
+  function resetAllies() {
+    for (const ally of state.allies) {
+      const ud = ally.userData;
+      ud.hpMax = Math.max(ud.hpMax || 2, ud.level >= 2 ? 3 : 2);
+      ud.hp = ud.hpMax;
+      ud.status = "active";
+      ud.disabledTimer = 0;
+      ud.fireTimer = Math.random() * ALLY_FIRE_CD;
+      ud.target = null;
+      ally.visible = true;
+      ally.scale.copy(ud.baseScale || new THREE.Vector3(1, 1, 1));
+    }
+  }
+  function serviceAlliesBetweenWaves() {
+    let repaired = 0, upgraded = 0;
+    for (const ally of state.allies) {
+      const ud = ally.userData;
+      if (ud.status === "destroyed") {
+        if (Math.random() < 0.45) {
+          ud.status = "disabled"; ud.disabledTimer = 2.5; ud.hp = 1; ally.visible = true; repaired++;
+        }
+      } else {
+        const before = ud.hp;
+        ud.hp = Math.min(ud.hpMax, ud.hp + 1);
+        if (ud.status === "disabled") { ud.status = "active"; ud.disabledTimer = 0; }
+        if (ud.hp > before) repaired++;
+      }
+      if (ud.status !== "destroyed" && state.wave > 1 && ud.level < 3 && Math.random() < 0.16) {
+        ud.level++;
+        ud.hpMax++;
+        ud.hp = ud.hpMax;
+        upgraded++;
+      }
+    }
+    if (repaired || upgraded) term("ORBITAL ALLIES SERVICED — R" + repaired + " U" + upgraded);
+  }
+  function damageAlly(ally, amount) {
+    const ud = ally.userData;
+    if (ud.status === "destroyed") return;
+    ud.hp -= amount;
+    if (ud.hp <= 0) {
+      if (ud.status === "disabled" || Math.random() < 0.35) {
+        ud.status = "destroyed"; ally.visible = false;
+        spawnExplosion(ally.getWorldPosition(tmpB), 0x7df9ff, 12);
+        term("ORBITAL ALLY DESTROYED");
+      } else {
+        ud.status = "disabled"; ud.disabledTimer = 7 + Math.random() * 5; ud.hp = 1;
+        spawnExplosion(ally.getWorldPosition(tmpB), 0xffd166, 8);
+        term("ORBITAL ALLY DISABLED");
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1054,7 +1136,8 @@
     shipQuat.identity(); mouseAim.x = 0; mouseAim.y = 0;
     player.position.copy(shipPos); player.quaternion.copy(shipQuat);
 
-    invaderPool.releaseAll(); playerBullets.releaseAll(); enemyBullets.releaseAll(); particlePool.releaseAll();
+    invaderPool.releaseAll(); playerBullets.releaseAll(); enemyBullets.releaseAll(); allyBullets.releaseAll(); particlePool.releaseAll();
+    resetAllies();
     spawnAsteroidField();
     termLines.length = 0; term("SYSTEMS ONLINE"); term("DEFEND THE HOMEWORLD");
     beginWave(1); syncHud();
@@ -1103,6 +1186,17 @@
       const a = s.userData.angle;
       s.position.set(Math.cos(a) * s.userData.rad, s.userData.y, Math.sin(a) * s.userData.rad);
       s.rotation.y = -a;
+      if (s.userData.ally) {
+        const ud = s.userData;
+        if (ud.status === "disabled") {
+          ud.disabledTimer -= dt;
+          s.rotation.z += dt * 2.5;
+          s.scale.setScalar(0.75 + Math.sin(t * 14) * 0.08);
+          if (ud.disabledTimer <= 0) { ud.status = "active"; s.scale.copy(ud.baseScale); term("ORBITAL ALLY REBOOTED"); }
+        } else if (ud.status === "active") {
+          s.scale.copy(ud.baseScale).multiplyScalar(1 + Math.sin(t * 6 + ud.angle) * 0.035);
+        }
+      }
     }
     if (player.userData.flare) player.userData.flare.scale.y = 0.7 + Math.sin(t * 30) * 0.3 + (controlAxes.boost ? 0.8 : 0);
 
@@ -1186,12 +1280,46 @@
         inv.position.addScaledVector(ud.vel, dt);
         inv.rotation.y += dt * ud.spin; inv.userData.ring.rotation.x += dt * 2;
 
+        if (ud.role === "bomber") {
+          for (const ally of state.allies) {
+            if (ally.userData.status === "destroyed") continue;
+            ally.getWorldPosition(tmpB);
+            if (inv.position.distanceToSquared(tmpB) < 7 * 7) {
+              damageAlly(ally, 1);
+              inv.userData.vel.addScaledVector(inv.position.clone().sub(tmpB).normalize(), 12);
+              break;
+            }
+          }
+        }
+
         // hunter fire
         if (ud.role === "hunter") {
           ud.fireTimer -= dt;
           if (ud.fireTimer <= 0 && state.enemyFireBudget > 0.25 && inv.position.distanceTo(shipPos) < 160) {
             spawnEnemyBullet(inv); state.enemyFireBudget = 0;
             ud.fireTimer = 1.6 + Math.random() * 2;
+          }
+        }
+      }
+
+      // --- Allied orbital defenses ---
+      for (const ally of state.allies) {
+        const aud = ally.userData;
+        if (aud.status !== "active") continue;
+        aud.fireTimer -= dt;
+        ally.getWorldPosition(aud.muzzle);
+        let best = null, bestD2 = (78 + aud.level * 12) ** 2;
+        for (const inv of invaderPool.active) {
+          if (inv.userData.role !== "bomber") continue;
+          const d2 = aud.muzzle.distanceToSquared(inv.position);
+          if (d2 < bestD2) { bestD2 = d2; best = inv; }
+        }
+        aud.target = best;
+        if (best) {
+          ally.lookAt(best.position);
+          if (aud.fireTimer <= 0 && allyBullets.active.length < 7) {
+            spawnAllyBullet(ally, best);
+            aud.fireTimer = Math.max(1.7, ALLY_FIRE_CD - aud.level * 0.35) + Math.random() * 0.7;
           }
         }
       }
@@ -1223,12 +1351,39 @@
       for (let i = enemyBullets.active.length - 1; i >= 0; i--) {
         const b = enemyBullets.active[i];
         b.position.addScaledVector(b.userData.vel, dt);
+        for (const ally of state.allies) {
+          if (ally.userData.status === "destroyed") continue;
+          ally.getWorldPosition(tmpB);
+          if (b.position.distanceToSquared(tmpB) < 2.8 * 2.8) {
+            spawnExplosion(b.position, 0x7df9ff, 6); enemyBullets.release(b); damageAlly(ally, 1);
+            break;
+          }
+        }
+        if (!enemyBullets.active.includes(b)) continue;
         if (b.position.distanceToSquared(shipPos) < 2.2 * 2.2) {
           spawnExplosion(shipPos, 0xff5d73, 10); Sfx.playerHit(); enemyBullets.release(b);
           term("INCOMING FIRE — SHIELD " + Math.round(state.shield) + "%");
           damageHull(12); if (!state.running) return; continue;
         }
         if (b.position.distanceToSquared(b.userData.from) > ENEMY_BULLET_RANGE * ENEMY_BULLET_RANGE) enemyBullets.release(b);
+      }
+
+      // --- Allied defense shots ---
+      for (let i = allyBullets.active.length - 1; i >= 0; i--) {
+        const b = allyBullets.active[i];
+        b.position.addScaledVector(b.userData.vel, dt);
+        let hit = false;
+        for (let j = invaderPool.active.length - 1; j >= 0; j--) {
+          const inv = invaderPool.active[j];
+          if (inv.userData.role !== "bomber") continue;
+          if (b.position.distanceToSquared(inv.position) < 1.6 * 1.6) {
+            spawnExplosion(inv.position, 0x7df9ff, 10);
+            addScore(25, inv.position, "#7df9ff");
+            if (state.target === inv) state.target = null;
+            invaderPool.release(inv); hit = true; break;
+          }
+        }
+        if (hit || b.position.distanceToSquared(b.userData.from) > ALLY_BULLET_RANGE * ALLY_BULLET_RANGE) allyBullets.release(b);
       }
 
       // --- Asteroids (drift/spin) + ship collision ---
@@ -1263,6 +1418,7 @@
       if (state.toSpawn === 0 && invaderPool.active.length === 0) {
         Sfx.waveClear(); addScore(150);
         state.hull = Math.min(100, state.hull + 12); term("WAVE CLEARED — HULL REPAIRED");
+        serviceAlliesBetweenWaves();
         beginWave(state.wave + 1);
       }
     }
@@ -1338,6 +1494,9 @@
       ctx.fillStyle = color; ctx.fillRect(px - 1.5, py - 1.5, 3, 3);
     };
     for (const inv of invaderPool.active) plot(inv.position, inv.userData.role === "bomber" ? "#ff8c1a" : "#ff3340");
+    for (const ally of state.allies) {
+      if (ally.userData.status !== "destroyed") plot(ally.getWorldPosition(tmpB), ally.userData.status === "disabled" ? "#ffd166" : "#7df9ff");
+    }
     for (const a of asteroids) plot(a.position, "rgba(150,150,160,0.7)");
 
     // Terminal: bearing of nearest hostile
