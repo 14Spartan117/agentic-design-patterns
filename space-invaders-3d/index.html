@@ -326,6 +326,23 @@
   .touch-settings label { display: flex; justify-content: space-between; align-items: center; gap: 10px; color: #9fb3c8; font-size: 12px; letter-spacing: 1px; }
   .touch-settings input, .touch-settings select { accent-color: var(--cyan); background: rgba(125,249,255,0.08); color: #e6f7ff; border: 1px solid rgba(125,249,255,0.35); border-radius: 5px; padding: 4px; }
   @media (max-width: 560px) { .touch-settings { grid-template-columns: 1fr; } }
+
+  /* --- Mobile: keep HUD panels out of the bottom thumb zones --- */
+  body.show-touch #settingsToggle { top: 6px; left: 6px; right: auto; }
+  body.show-touch #settingsMenu { top: 44px; left: 6px; right: auto; }
+  body.show-touch #radarPanel { top: 60px; bottom: auto; left: 6px; transform: scale(0.7); transform-origin: top left; }
+  body.show-touch #systems { top: 30px; bottom: auto; right: 6px; width: 132px; transform: scale(0.82); transform-origin: top right; }
+  body.show-touch #terminal { display: none; }
+  body.show-touch #flightinfo { display: none; }
+
+  /* Make full-screen overlays scrollable on short / small screens so the
+     LAUNCH and action buttons are always reachable */
+  @media (max-width: 760px), (max-height: 540px) {
+    .overlay { justify-content: flex-start; overflow-y: auto; gap: 12px; padding: 14px 14px 28px; }
+    .overlay h1 { margin-top: 4px; }
+    #profilePanel { max-height: 24vh; }
+    .settingsPanel, .touch-settings { font-size: 11px; }
+  }
 </style>
 </head>
 <body>
@@ -1100,8 +1117,10 @@
     tex.cloud = get("earth_clouds_1024.png", "cloud", true);
     tex.moon = get("moon_1024.jpg", "moon", true);
     mgr.onLoad = () => finishLoad(tex);
-    mgr.onError = () => finishLoad(tex);
-    // Safety: don't hang forever if the CDN is slow/unreachable
+    // NB: don't finish on the first onError — the day/night loaders fall back
+    // (hi-res -> 2048 -> canvas) by starting new loads, and onLoad fires once
+    // every item (including errored ones via itemEnd) has settled, so the final
+    // fallback texture is in place. The timeout below covers a hard hang.
     setTimeout(() => { if (!assetsReady) finishLoad(tex); }, 8000);
   }
   function finishLoad(tex) {
